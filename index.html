@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stage Formation Planner</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- ═══ TOP TOOLBAR ═══ -->
+    <header id="toolbar">
+      <div class="toolbar-group brand">
+        <span class="app-title">Stage Planner</span>
+      </div>
+
+      <div class="toolbar-sep"></div>
+
+      <div class="toolbar-group" id="scene-controls">
+        <span class="toolbar-label">Scene</span>
+        <select id="scene-select" title="Current scene"></select>
+        <button id="btn-add-scene" title="Add new scene">+ Scene</button>
+        <button id="btn-rename-scene" title="Rename scene" class="icon-btn">✏</button>
+        <button id="btn-dup-scene" title="Duplicate scene" class="icon-btn">⧉</button>
+        <button id="btn-del-scene" title="Delete scene" class="icon-btn">🗑</button>
+      </div>
+
+      <div class="toolbar-sep"></div>
+
+      <div class="toolbar-group">
+        <button id="btn-play" title="Animate transition to next scene" class="btn-accent">▶ Play</button>
+        <button id="btn-stop" title="Stop animation" class="btn-danger hidden">■ Stop</button>
+      </div>
+
+      <div class="toolbar-sep"></div>
+
+      <div class="toolbar-group">
+        <button id="btn-zoom-out" title="Zoom out">−</button>
+        <span id="zoom-label" title="Zoom level">100%</span>
+        <button id="btn-zoom-in" title="Zoom in">+</button>
+        <button id="btn-zoom-fit" title="Fit stage to window">⊡ Fit</button>
+      </div>
+
+      <div class="toolbar-sep"></div>
+
+      <div class="toolbar-group">
+        <button id="btn-grid" class="toggle-btn" title="Toggle grid (G)">⊞ Grid</button>
+        <button id="btn-snap" class="toggle-btn" title="Snap to grid">⊕ Snap</button>
+        <button id="btn-measure" class="toggle-btn" title="Measurement tool">📐 Measure</button>
+      </div>
+
+      <div class="toolbar-sep"></div>
+
+      <div class="toolbar-group">
+        <button id="btn-undo" title="Undo (Ctrl+Z)">↩</button>
+        <button id="btn-redo" title="Redo (Ctrl+Y)">↪</button>
+      </div>
+
+      <div class="toolbar-group ml-auto">
+        <button id="btn-export" class="btn-accent" title="Export as PNG">↓ PNG</button>
+        <button id="btn-fullscreen" title="Toggle fullscreen">⛶</button>
+        <a href="https://github.com/xpanflow/stage-formation/tree/main"
+           target="_blank" rel="noopener noreferrer"
+           class="toolbar-gh-link" title="View source on GitHub">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
+              0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13
+              -.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66
+              .07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15
+              -.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09
+              2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82
+              2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01
+              2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+          </svg>
+        </a>
+      </div>
+    </header>
+
+    <!-- ═══ MAIN BODY ═══ -->
+    <div id="main-body">
+
+      <!-- LEFT SIDEBAR -->
+      <aside id="left-sidebar">
+        <div class="sidebar-section">
+          <div class="sidebar-header">
+            <span>Performers</span>
+            <button id="btn-add-performer" class="btn-small btn-accent">+ Add</button>
+          </div>
+          <ul id="performer-list"></ul>
+        </div>
+      </aside>
+
+      <!-- STAGE AREA -->
+      <main id="stage-area">
+        <div id="stage-container">
+          <svg id="stage-svg" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="floor-grad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#1c1c3a"/>
+                <stop offset="100%" stop-color="#272748"/>
+              </linearGradient>
+              <filter id="perf-glow" x="-40%" y="-40%" width="180%" height="180%">
+                <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="rgba(0,0,0,0.5)"/>
+              </filter>
+            </defs>
+
+            <!-- Viewport group: everything in world (meter) coordinates -->
+            <g id="viewport">
+              <image id="stage-bg" x="0" y="0" preserveAspectRatio="xMidYMid slice" style="display:none"/>
+              <rect id="stage-floor" x="0" y="0" fill="url(#floor-grad)"/>
+              <g id="grid-layer"></g>
+              <rect id="stage-border" x="0" y="0" fill="none"
+                    stroke="rgba(255,255,255,0.65)" stroke-width="2"
+                    vector-effect="non-scaling-stroke"/>
+              <g id="front-back-labels"></g>
+              <g id="paths-layer"></g>
+              <g id="measure-layer"></g>
+              <g id="performers-layer"></g>
+              <g id="ruler-layer"></g>
+            </g>
+          </svg>
+        </div>
+        <div id="stage-coords">x: 0.0 m   y: 0.0 m</div>
+      </main>
+
+      <!-- RIGHT SIDEBAR -->
+      <aside id="right-sidebar">
+
+        <div class="sidebar-section">
+          <div class="sidebar-header"><span>Stage</span></div>
+          <div class="field-row">
+            <label>Width</label>
+            <div class="field-inp-wrap">
+              <input type="number" id="stage-width" min="1" max="200" step="0.5" value="10">
+              <span class="unit">m</span>
+            </div>
+          </div>
+          <div class="field-row">
+            <label>Depth</label>
+            <div class="field-inp-wrap">
+              <input type="number" id="stage-depth" min="1" max="200" step="0.5" value="6">
+              <span class="unit">m</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="sidebar-header"><span>Background</span></div>
+          <button id="btn-upload-bg" class="full-btn">↑ Upload Image</button>
+          <input type="file" id="bg-file-input" accept="image/png,image/jpeg,image/webp" style="display:none">
+          <button id="btn-clear-bg" class="full-btn secondary">✕ Clear</button>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="sidebar-header"><span>Animation</span></div>
+          <div class="field-row">
+            <label>Duration</label>
+            <div class="field-inp-wrap">
+              <input type="number" id="anim-duration" min="0.5" max="60" step="0.5" value="3">
+              <span class="unit">s</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar-section" id="measure-section">
+          <div class="sidebar-header"><span>Measurement</span></div>
+          <p id="measure-result" class="hint-text">Enable 📐 then click two points</p>
+        </div>
+
+        <div class="sidebar-section" id="selected-section" style="display:none">
+          <div class="sidebar-header"><span>Selected</span></div>
+          <div class="field-row">
+            <label>Name</label>
+            <input type="text" id="sel-name" class="flex-inp">
+          </div>
+          <div class="field-row">
+            <label>Color</label>
+            <input type="color" id="sel-color">
+          </div>
+          <div class="field-row">
+            <label>Type</label>
+            <select id="sel-type" class="flex-inp">
+              <option value="child">Child</option>
+              <option value="adult">Adult</option>
+              <option value="teacher">Teacher</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <label>Visible</label>
+            <input type="checkbox" id="sel-visible" checked>
+          </div>
+          <div class="field-row">
+            <label>X</label>
+            <div class="field-inp-wrap">
+              <input type="number" id="sel-x" step="0.1">
+              <span class="unit">m</span>
+            </div>
+          </div>
+          <div class="field-row">
+            <label>Y</label>
+            <div class="field-inp-wrap">
+              <input type="number" id="sel-y" step="0.1">
+              <span class="unit">m</span>
+            </div>
+          </div>
+          <button id="btn-delete-selected" class="full-btn danger">🗑 Delete Performer</button>
+        </div>
+
+      </aside>
+    </div>
+  </div>
+
+  <!-- ═══ ADD PERFORMER MODAL ═══ -->
+  <div id="modal-overlay" class="hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div id="modal-box">
+      <h2 id="modal-title">Add Performer</h2>
+      <div class="field-row">
+        <label>Name</label>
+        <input type="text" id="new-name" class="flex-inp" placeholder="e.g. Alice" autocomplete="off">
+      </div>
+      <div class="field-row">
+        <label>Color</label>
+        <div class="color-row">
+          <input type="color" id="new-color" value="#4a9eff">
+          <div id="color-presets"></div>
+        </div>
+      </div>
+      <div class="field-row">
+        <label>Type</label>
+        <select id="new-type" class="flex-inp">
+          <option value="child">Child  (w 0.4m)</option>
+          <option value="adult">Adult  (w 0.5m)</option>
+          <option value="teacher">Teacher (w 0.55m)</option>
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button id="btn-modal-cancel">Cancel</button>
+        <button id="btn-modal-ok" class="btn-accent">Add Performer</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

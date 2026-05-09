@@ -1,0 +1,1385 @@
+'use strict';
+
+/* ============================================================
+   UTILITIES
+============================================================ */
+const uid       = () => Math.random().toString(36).slice(2, 10);
+const lerp      = (a, b, t) => a + (b - a) * t;
+const clamp     = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const easeInOut = t => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+
+function makeSVGEl(tag, attrs = {}, text) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+  if (text != null) el.textContent = text;
+  return el;
+}
+
+/* ============================================================
+   CONSTANTS
+============================================================ */
+const STORAGE_KEY = 'stageFormation_v1';
+const PADDING     = 48;   // px around stage at zoom=1
+
+const TYPES = {
+  child:   { widthM: 0.40, heightM: 1.30, shape: 'circle', label: 'Child'   },
+  adult:   { widthM: 0.50, heightM: 1.75, shape: 'circle', label: 'Adult'   },
+  teacher: { widthM: 0.55, heightM: 1.75, shape: 'rect',   label: 'Teacher' },
+};
+
+const PRESET_COLORS = [
+  '#e74c3c','#e67e22','#f1c40f','#2ecc71',
+  '#1abc9c','#3498db','#9b59b6','#e91e63',
+  '#ff5722','#00bcd4','#8bc34a','#795548',
+];
+
+/* ============================================================
+   STATE
+============================================================ */
+const State = (() => {
+  let _p = null;
+  const _undo = [];
+  const _redo = [];
+
+  function _makeDefault() {
+    return {
+      stageDimensions: { width: 10, depth: 6 },
+      backgroundImage: null,
+      performers: [],
+      scenes: [{ id: uid(), name: 'Scene 1', positions: {} }],
+      currentSceneIndex: 0,
+      settings: {
+        gridVisible:    true,
+        snapToGrid:     false,
+        gridSize:       1,
+        animDurationMs: 3000,
+      },
+    };
+  }
+
+  function _snap() { return JSON.parse(JSON.stringify(_p)); }
+
+  return {
+    get p() { return _p; },
+    set p(v) { _p = v; },
+
+    init() {
+      _p = Persistence.load() || _makeDefault();
+    },
+
+    pushUndo() {
+      _undo.push(_snap());
+      if (_undo.length > 60) _undo.shift();
+      _redo.length = 0;
+    },
+
+    undo() {
+      if (!_undo.length) return;
+      _redo.push(_snap());
+      _p = _undo.pop();
+      Persistence.save();
+      Renderer.render();
+      UI.syncAll();
+    },
+
+    redo() {
+      if (!_redo.length) return;
+      _undo.push(_snap());
+      _p = _redo.pop();
+      Persistence.save();
+      Renderer.render();
+      UI.syncAll();
+    },
+
+    canUndo() { return _undo.length > 0; },
+    canRedo()  { return _redo.length > 0; },
+  };
+})();
+
+/* ============================================================
+   TRANSFORM  — world (meters) ↔ screen (SVG pixels)
+============================================================ */
+const Transform = (() => {
+  let _tx       = PADDING;  // stage origin X in SVG pixels
+  let _ty       = PADDING;  // stage origin Y in SVG pixels
+  let _scale    = 80;       // current px / m
+  let _fitScale = 80;       // scale that fits stage to window
+
+  function _svgEl()   { return document.getElementById('stage-svg'); }
+  function _svgRect() { return _svgEl().getBoundingClientRect(); }
+
+  function fitToWindow() {
+    const r  = _svgRect();
+    const W  = r.width  || 900;
+    const H  = r.height || 600;
+    const p  = State.p;
+    const sw = p.stageDimensions.width;
+    const sd = p.stageDimensions.depth;
+    _fitScale = Math.min((W - 2 * PADDING) / sw, (H - 2 * PADDING) / sd);
+    _scale    = _fitScale;
+    _tx       = (W - sw * _scale) / 2;
+    _ty       = (H - sd * _scale) / 2;
+    Renderer.render();
+    UI.syncZoomLabel();
+  }
+
+  function zoomAt(factor, cx, cy) {
+    const ns = clamp(_scale * factor, 4, 6000);
+    const f  = ns / _scale;
+    _tx      = cx - (cx - _tx) * f;
+    _ty      = cy - (cy - _ty) * f;
+    _scale   = ns;
+    Renderer.render();
+    UI.syncZoomLabel();
+  }
+
+  function pan(dx, dy) {
+    _tx += dx;
+    _ty += dy;
+    Renderer.render();
+  }
+
+  const worldToScreen = (x, y) => ({ x: _tx + x * _scale, y: _ty + y * _scale });
+  const screenToWorld = (sx, sy) => ({ x: (sx - _tx) / _scale, y: (sy - _ty) / _scale });
+  const getTransform  = ()  => `translate(${_tx.toFixed(2)},${_ty.toFixed(2)}) scale(${_scale.toFixed(4)})`;
+  const getScale      = ()  => _scale;
+  const getZoomPct    = ()  => `${Math.round((_scale / _fitScale) * 100)}%`;
+
+  return { fitToWindow, zoomAt, pan, worldToScreen, screenToWorld, getTransform, getScale, getZoomPct };
+})();
+
+/* ============================================================
+   RENDERER  — all SVG drawing
+============================================================ */
+const Renderer = (() => {
+
+  /* ── full redraw ── */
+  function render() {
+    const p  = State.p;
+    const sw = p.stageDimensions.width;
+    const sd = p.stageDimensions.depth;
+
+    document.getElementById('viewport').setAttribute('transform', Transform.getTransform());
+
+    /* background */
+    const bgEl  = document.getElementById('stage-bg');
+    const floor = document.getElementById('stage-floor');
+    if (p.backgroundImage) {
+      bgEl.setAttribute('href',   p.backgroundImage);
+      bgEl.setAttribute('width',  sw);
+      bgEl.setAttribute('height', sd);
+      bgEl.style.display  = '';
+      floor.style.display = 'none';
+    } else {
+      bgEl.style.display  = 'none';
+      floor.setAttribute('width',  sw);
+      floor.setAttribute('height', sd);
+      floor.style.display = '';
+    }
+
+    /* border */
+    const border = document.getElementById('stage-border');
+    border.setAttribute('width',  sw);
+    border.setAttribute('height', sd);
+
+    _renderFrontBack();
+    renderGrid();
+    renderPerformers();
+    renderRuler();
+    MeasureTool.renderLayer();
+  }
+
+  /* ── FRONT / BACK labels ── */
+  function _renderFrontBack() {
+    const p   = State.p;
+    const sw  = p.stageDimensions.width;
+    const sd  = p.stageDimensions.depth;
+    const sc  = Transform.getScale();
+    const fs  = 9 / sc;
+    const col = 'rgba(255,255,255,0.2)';
+    const g   = document.getElementById('front-back-labels');
+    g.innerHTML = '';
+    const mkLabel = (x, y, txt) => g.appendChild(makeSVGEl('text',
+      { x, y, 'font-size': fs, fill: col, 'text-anchor': 'middle', 'pointer-events': 'none', 'dominant-baseline': 'middle' }, txt));
+    mkLabel(sw / 2, -fs * 1.4, 'BACK');
+    mkLabel(sw / 2, sd + fs * 1.4, 'FRONT');
+  }
+
+  /* ── GRID ── */
+  function renderGrid() {
+    const p     = State.p;
+    const layer = document.getElementById('grid-layer');
+    layer.innerHTML = '';
+    if (!p.settings.gridVisible) return;
+
+    const sw = p.stageDimensions.width;
+    const sd = p.stageDimensions.depth;
+    const gs = p.settings.gridSize;
+    const sc = Transform.getScale();
+    const fs = 9 / sc;
+    const lc = 'rgba(255,255,255,0.09)';
+    const tc = 'rgba(255,255,255,0.25)';
+
+    for (let x = gs; x < sw - 0.001; x += gs) {
+      layer.appendChild(makeSVGEl('line',
+        { x1: x, y1: 0, x2: x, y2: sd, stroke: lc, 'stroke-width': 1, 'vector-effect': 'non-scaling-stroke' }));
+      layer.appendChild(makeSVGEl('text',
+        { x: x, y: sd - fs * 0.3, 'font-size': fs, fill: tc, 'text-anchor': 'middle', 'dominant-baseline': 'auto', 'pointer-events': 'none' },
+        `${x}m`));
+    }
+    for (let y = gs; y < sd - 0.001; y += gs) {
+      layer.appendChild(makeSVGEl('line',
+        { x1: 0, y1: y, x2: sw, y2: y, stroke: lc, 'stroke-width': 1, 'vector-effect': 'non-scaling-stroke' }));
+      layer.appendChild(makeSVGEl('text',
+        { x: fs * 0.3, y: y, 'font-size': fs, fill: tc, 'text-anchor': 'start', 'dominant-baseline': 'middle', 'pointer-events': 'none' },
+        `${y}m`));
+    }
+  }
+
+  /* ── PERFORMERS ── */
+  function renderPerformers(animPositions) {
+    const p     = State.p;
+    const layer = document.getElementById('performers-layer');
+    layer.innerHTML = '';
+
+    const scene = p.scenes[p.currentSceneIndex];
+    if (!scene) return;
+
+    const positions = animPositions || scene.positions;
+    const sc        = Transform.getScale();
+    const fs        = 12 / sc;
+    const selId     = UI.selectedId;
+
+    for (const perf of p.performers) {
+      const pos = positions[perf.id];
+      if (!pos || pos.visible === false) continue;
+
+      const ti = TYPES[perf.type] || TYPES.child;
+      const r  = ti.widthM / 2;
+      const cx = pos.x;
+      const cy = pos.y;
+
+      const g = makeSVGEl('g', { 'data-id': perf.id, class: 'performer-group', style: 'cursor:grab' });
+
+      /* selection ring */
+      if (perf.id === selId) {
+        g.appendChild(makeSVGEl('circle', {
+          cx, cy, r: r + 5 / sc,
+          fill: 'none', stroke: 'rgba(255,255,255,0.85)',
+          'stroke-width': 2, 'vector-effect': 'non-scaling-stroke',
+          'stroke-dasharray': `${8 / sc} ${4 / sc}`,
+        }));
+      }
+
+      /* body */
+      if (ti.shape === 'rect') {
+        g.appendChild(makeSVGEl('rect', {
+          x: cx - r, y: cy - r, width: ti.widthM, height: ti.widthM, rx: 0.06,
+          fill: perf.color, stroke: 'rgba(255,255,255,0.75)',
+          'stroke-width': 1.5, 'vector-effect': 'non-scaling-stroke',
+          filter: 'url(#perf-glow)',
+        }));
+      } else {
+        g.appendChild(makeSVGEl('circle', {
+          cx, cy, r,
+          fill: perf.color, stroke: 'rgba(255,255,255,0.75)',
+          'stroke-width': 1.5, 'vector-effect': 'non-scaling-stroke',
+          filter: 'url(#perf-glow)',
+        }));
+      }
+
+      /* name label with text-stroke for readability */
+      const lbl = makeSVGEl('text', {
+        x: cx, y: cy + r + fs * 0.2,
+        'font-size': fs, fill: '#fff',
+        'text-anchor': 'middle', 'dominant-baseline': 'hanging',
+        'paint-order': 'stroke',
+        stroke: 'rgba(0,0,0,0.75)', 'stroke-width': fs * 0.3, 'stroke-linejoin': 'round',
+        'pointer-events': 'none',
+      }, perf.name);
+      g.appendChild(lbl);
+
+      layer.appendChild(g);
+    }
+  }
+
+  /* ── RULER ── */
+  function renderRuler() {
+    const layer = document.getElementById('ruler-layer');
+    layer.innerHTML = '';
+    const sd  = State.p.stageDimensions.depth;
+    const sc  = Transform.getScale();
+    const fs  = 9 / sc;
+    const th  = 4 / sc;
+    const by  = sd + 10 / sc;
+    const col = 'rgba(255,255,255,0.45)';
+
+    layer.appendChild(makeSVGEl('line',
+      { x1: 0, y1: by, x2: 1, y2: by, stroke: col, 'stroke-width': 1.5, 'vector-effect': 'non-scaling-stroke' }));
+    for (const x of [0, 1]) {
+      layer.appendChild(makeSVGEl('line',
+        { x1: x, y1: by - th, x2: x, y2: by + th, stroke: col, 'stroke-width': 1.5, 'vector-effect': 'non-scaling-stroke' }));
+    }
+    layer.appendChild(makeSVGEl('text',
+      { x: 0.5, y: by + th + fs * 0.2, 'font-size': fs, fill: col, 'text-anchor': 'middle', 'dominant-baseline': 'hanging', 'pointer-events': 'none' },
+      '1 m'));
+  }
+
+  /* ── MOVEMENT PATHS (shown during animation preview) ── */
+  function renderPaths(fromPos, toPos) {
+    const layer = document.getElementById('paths-layer');
+    layer.innerHTML = '';
+    const sc = Transform.getScale();
+
+    for (const perf of State.p.performers) {
+      const fr = fromPos[perf.id];
+      const to = toPos[perf.id];
+      if (!fr || !to) continue;
+
+      const dx  = to.x - fr.x;
+      const dy  = to.y - fr.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 0.05) continue;
+
+      layer.appendChild(makeSVGEl('line', {
+        x1: fr.x, y1: fr.y, x2: to.x, y2: to.y,
+        stroke: perf.color, 'stroke-width': 2, 'vector-effect': 'non-scaling-stroke',
+        'stroke-dasharray': `${10 / sc} ${5 / sc}`, opacity: 0.55,
+      }));
+
+      /* arrow head */
+      const nx  = dx / len;
+      const ny  = dy / len;
+      const as  = 8 / sc;
+      const bx  = to.x - nx * as;
+      const by  = to.y - ny * as;
+      const px  = -ny * as * 0.5;
+      const py  =  nx * as * 0.5;
+      layer.appendChild(makeSVGEl('polygon', {
+        points: `${to.x},${to.y} ${bx + px},${by + py} ${bx - px},${by - py}`,
+        fill: perf.color, opacity: 0.65,
+      }));
+    }
+  }
+
+  function clearPaths() { document.getElementById('paths-layer').innerHTML = ''; }
+
+  return { render, renderGrid, renderPerformers, renderRuler, renderPaths, clearPaths };
+})();
+
+/* ============================================================
+   ANIMATOR
+============================================================ */
+const Animator = (() => {
+  let _rafId     = null;
+  let _startTime = null;
+  let _fromPos   = null;
+  let _toPos     = null;
+  let _animPos   = null;
+  let _playing   = false;
+
+  function play() {
+    const p       = State.p;
+    const nextIdx = p.currentSceneIndex + 1;
+    if (nextIdx >= p.scenes.length) {
+      alert('No next scene to transition to.\nAdd another scene first.');
+      return;
+    }
+    _fromPos  = JSON.parse(JSON.stringify(p.scenes[p.currentSceneIndex].positions));
+    _toPos    = JSON.parse(JSON.stringify(p.scenes[nextIdx].positions));
+    _animPos  = JSON.parse(JSON.stringify(_fromPos));
+    _playing  = true;
+    _startTime = null;
+
+    Renderer.renderPaths(_fromPos, _toPos);
+    document.getElementById('btn-play').classList.add('hidden');
+    document.getElementById('btn-stop').classList.remove('hidden');
+    _rafId = requestAnimationFrame(_tick);
+  }
+
+  function _tick(ts) {
+    if (_startTime === null) _startTime = ts;
+    const p       = State.p;
+    const elapsed = ts - _startTime;
+    const t       = easeInOut(Math.min(elapsed / p.settings.animDurationMs, 1));
+
+    for (const perf of p.performers) {
+      const fr = _fromPos[perf.id];
+      const to = _toPos[perf.id];
+      if (fr && to) {
+        _animPos[perf.id] = { x: lerp(fr.x, to.x, t), y: lerp(fr.y, to.y, t), visible: true };
+      } else if (fr) {
+        _animPos[perf.id] = { ...fr };
+      }
+    }
+    Renderer.renderPerformers(_animPos);
+
+    if (elapsed < p.settings.animDurationMs) {
+      _rafId = requestAnimationFrame(_tick);
+    } else {
+      _finish();
+    }
+  }
+
+  function _finish() {
+    _cleanup();
+    const p = State.p;
+    p.currentSceneIndex = Math.min(p.currentSceneIndex + 1, p.scenes.length - 1);
+    Persistence.save();
+    UI.syncAll();
+    Renderer.render();
+  }
+
+  function stop() {
+    if (!_playing) return;
+    _cleanup();
+    Renderer.render();
+  }
+
+  function _cleanup() {
+    if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+    _playing   = false;
+    _animPos   = null;
+    _startTime = null;
+    Renderer.clearPaths();
+    document.getElementById('btn-play').classList.remove('hidden');
+    document.getElementById('btn-stop').classList.add('hidden');
+  }
+
+  return {
+    get isPlaying() { return _playing; },
+    play, stop,
+  };
+})();
+
+/* ============================================================
+   DRAG & DROP  — pointer events + pinch zoom
+============================================================ */
+const DragDrop = (() => {
+  let _svg      = null;
+  let _drag     = null;   // { perfId, startSX, startSY, origX, origY }
+  let _pan      = null;   // { lastX, lastY }
+  let _spaceKey = false;
+
+  /* multi-touch tracking for pinch zoom */
+  const _ptrs     = new Map();  // pointerId → {clientX, clientY}
+  let _lastPinch  = null;
+
+  function init() {
+    _svg = document.getElementById('stage-svg');
+    _svg.addEventListener('pointerdown',  _onDown);
+    _svg.addEventListener('pointermove',  _onMove);
+    _svg.addEventListener('pointerup',    _onUp);
+    _svg.addEventListener('pointercancel',_onUp);
+    _svg.addEventListener('wheel', _onWheel, { passive: false });
+
+    document.addEventListener('keydown', e => {
+      if (e.code === 'Space' && document.activeElement === document.body) {
+        e.preventDefault();
+        _spaceKey = true;
+        if (!_drag) _svg.style.cursor = 'grab';
+      }
+    });
+    document.addEventListener('keyup', e => {
+      if (e.code === 'Space') { _spaceKey = false; if (!_pan) _svg.style.cursor = ''; }
+    });
+  }
+
+  function _pt(e) {
+    const r = _svg.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  function _pinchDist() {
+    const pts = [..._ptrs.values()];
+    if (pts.length < 2) return null;
+    const dx = pts[0].clientX - pts[1].clientX;
+    const dy = pts[0].clientY - pts[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  function _pinchCenter() {
+    const pts = [..._ptrs.values()];
+    const r   = _svg.getBoundingClientRect();
+    return {
+      x: (pts[0].clientX + pts[1].clientX) / 2 - r.left,
+      y: (pts[0].clientY + pts[1].clientY) / 2 - r.top,
+    };
+  }
+
+  function _onDown(e) {
+    if (Animator.isPlaying) return;
+    _ptrs.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+
+    /* pinch start */
+    if (_ptrs.size === 2) {
+      _drag = _pan = null;
+      _lastPinch = _pinchDist();
+      _svg.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    /* measure click */
+    if (MeasureTool.active) {
+      MeasureTool.handleClick(_pt(e));
+      return;
+    }
+
+    /* pan: middle mouse or space+left */
+    if (e.button === 1 || (e.button === 0 && _spaceKey)) {
+      e.preventDefault();
+      _pan = { lastX: e.clientX, lastY: e.clientY };
+      _svg.style.cursor = 'grabbing';
+      _svg.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    if (e.button !== 0) return;
+
+    /* find performer group */
+    let el = e.target;
+    let perfEl = null;
+    while (el && el !== _svg) {
+      if (el.classList && el.classList.contains('performer-group')) { perfEl = el; break; }
+      el = el.parentElement;
+    }
+
+    if (perfEl) {
+      const perfId = perfEl.getAttribute('data-id');
+      const scene  = State.p.scenes[State.p.currentSceneIndex];
+      const pos    = scene.positions[perfId];
+      if (!pos) return;
+      UI.selectPerformer(perfId);
+      const sp = _pt(e);
+      _drag = { perfId, startSX: sp.x, startSY: sp.y, origX: pos.x, origY: pos.y };
+      _svg.style.cursor = 'grabbing';
+      _svg.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    } else {
+      UI.selectPerformer(null);
+    }
+  }
+
+  function _onMove(e) {
+    _ptrs.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+
+    /* pinch zoom */
+    if (_ptrs.size >= 2 && _lastPinch !== null) {
+      const d = _pinchDist();
+      if (d) { Transform.zoomAt(d / _lastPinch, _pinchCenter().x, _pinchCenter().y); _lastPinch = d; }
+      return;
+    }
+
+    const sp    = _pt(e);
+    const world = Transform.screenToWorld(sp.x, sp.y);
+    const p     = State.p;
+
+    /* coordinate display */
+    const el = document.getElementById('stage-coords');
+    if (el) el.textContent =
+      `x: ${clamp(world.x, 0, p.stageDimensions.width).toFixed(1)} m   ` +
+      `y: ${clamp(world.y, 0, p.stageDimensions.depth).toFixed(1)} m`;
+
+    if (_pan) {
+      Transform.pan(e.clientX - _pan.lastX, e.clientY - _pan.lastY);
+      _pan.lastX = e.clientX;
+      _pan.lastY = e.clientY;
+      return;
+    }
+
+    if (!_drag) return;
+
+    const sc   = Transform.getScale();
+    const perf = p.performers.find(pf => pf.id === _drag.perfId);
+    const ti   = TYPES[perf?.type] || TYPES.child;
+    const r    = ti.widthM / 2;
+
+    let nx = _drag.origX + (sp.x - _drag.startSX) / sc;
+    let ny = _drag.origY + (sp.y - _drag.startSY) / sc;
+    nx = clamp(nx, r, p.stageDimensions.width  - r);
+    ny = clamp(ny, r, p.stageDimensions.depth  - r);
+
+    if (p.settings.snapToGrid) {
+      const gs = p.settings.gridSize;
+      nx = Math.round(nx / gs) * gs;
+      ny = Math.round(ny / gs) * gs;
+    }
+
+    const pos = p.scenes[p.currentSceneIndex].positions[_drag.perfId];
+    pos.x = nx;
+    pos.y = ny;
+    Renderer.renderPerformers();
+    UI.syncSelectedPos();
+  }
+
+  function _onUp(e) {
+    _ptrs.delete(e.pointerId);
+    if (_ptrs.size < 2) _lastPinch = null;
+
+    if (_pan) {
+      _pan = null;
+      _svg.style.cursor = _spaceKey ? 'grab' : '';
+      return;
+    }
+    if (_drag) {
+      State.pushUndo();
+      Persistence.save();
+      _drag = null;
+      _svg.style.cursor = '';
+    }
+  }
+
+  function _onWheel(e) {
+    e.preventDefault();
+    const sp = _pt(e);
+    Transform.zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, sp.x, sp.y);
+  }
+
+  return { init };
+})();
+
+/* ============================================================
+   SCENE MANAGER
+============================================================ */
+const SceneManager = (() => {
+
+  function switchTo(index) {
+    const p = State.p;
+    if (index < 0 || index >= p.scenes.length) return;
+    p.currentSceneIndex = index;
+    Renderer.render();
+    UI.syncAll();
+    Persistence.save();
+  }
+
+  function addScene() {
+    const p = State.p;
+    State.pushUndo();
+    const cur = p.scenes[p.currentSceneIndex];
+    p.scenes.push({
+      id: uid(),
+      name: `Scene ${p.scenes.length + 1}`,
+      positions: JSON.parse(JSON.stringify(cur.positions)),
+    });
+    p.currentSceneIndex = p.scenes.length - 1;
+    Persistence.save();
+    UI.syncAll();
+    Renderer.render();
+  }
+
+  function duplicateScene() {
+    const p   = State.p;
+    State.pushUndo();
+    const cur = p.scenes[p.currentSceneIndex];
+    const dup = { id: uid(), name: cur.name + ' (copy)', positions: JSON.parse(JSON.stringify(cur.positions)) };
+    const idx = p.currentSceneIndex + 1;
+    p.scenes.splice(idx, 0, dup);
+    p.currentSceneIndex = idx;
+    Persistence.save();
+    UI.syncAll();
+    Renderer.render();
+  }
+
+  function deleteScene() {
+    const p = State.p;
+    if (p.scenes.length <= 1) return;
+    State.pushUndo();
+    p.scenes.splice(p.currentSceneIndex, 1);
+    p.currentSceneIndex = clamp(p.currentSceneIndex, 0, p.scenes.length - 1);
+    Persistence.save();
+    UI.syncAll();
+    Renderer.render();
+  }
+
+  function renameScene(name) {
+    if (!name?.trim()) return;
+    State.pushUndo();
+    State.p.scenes[State.p.currentSceneIndex].name = name.trim();
+    Persistence.save();
+    UI.syncSceneSelect();
+  }
+
+  function ensurePerformerPositions(perfId) {
+    const p  = State.p;
+    const ti = TYPES[p.performers.find(pf => pf.id === perfId)?.type] || TYPES.child;
+    const r  = ti.widthM / 2;
+    const sw = p.stageDimensions.width;
+    const sd = p.stageDimensions.depth;
+    for (const scene of p.scenes) {
+      if (!scene.positions[perfId]) {
+        scene.positions[perfId] = {
+          x: clamp(sw / 2 + (Math.random() - 0.5) * Math.min(sw, sd) * 0.5, r, sw - r),
+          y: clamp(sd / 2 + (Math.random() - 0.5) * Math.min(sw, sd) * 0.3, r, sd - r),
+          visible: true,
+        };
+      }
+    }
+  }
+
+  function removePerformerPositions(perfId) {
+    for (const scene of State.p.scenes) delete scene.positions[perfId];
+  }
+
+  return { switchTo, addScene, duplicateScene, deleteScene, renameScene, ensurePerformerPositions, removePerformerPositions };
+})();
+
+/* ============================================================
+   PERSISTENCE
+============================================================ */
+const Persistence = (() => {
+  let _t = null;
+
+  function save() {
+    clearTimeout(_t);
+    _t = setTimeout(() => {
+      try {
+        const p  = State.p;
+        const bg = p.backgroundImage;
+        p.backgroundImage = null;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
+        p.backgroundImage = bg;
+        if (bg) {
+          try { localStorage.setItem(STORAGE_KEY + '_bg', bg); } catch (_) {}
+        } else {
+          localStorage.removeItem(STORAGE_KEY + '_bg');
+        }
+      } catch (e) {
+        console.warn('localStorage save failed:', e);
+      }
+    }, 600);
+  }
+
+  function load() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      const p = JSON.parse(raw);
+      /* migration defaults */
+      if (!p.settings)                        p.settings = {};
+      if (p.settings.animDurationMs == null)  p.settings.animDurationMs = 3000;
+      if (p.settings.gridVisible    == null)  p.settings.gridVisible    = true;
+      if (p.settings.snapToGrid     == null)  p.settings.snapToGrid     = false;
+      if (p.settings.gridSize       == null)  p.settings.gridSize       = 1;
+      const bg = localStorage.getItem(STORAGE_KEY + '_bg');
+      if (bg) p.backgroundImage = bg;
+      return p;
+    } catch (_) { return null; }
+  }
+
+  function clearAll() {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(STORAGE_KEY + '_bg');
+  }
+
+  return { save, load, clearAll };
+})();
+
+/* ============================================================
+   EXPORTER  — offscreen Canvas → PNG
+============================================================ */
+const Exporter = (() => {
+
+  function exportPNG() {
+    const p   = State.p;
+    const sw  = p.stageDimensions.width;
+    const sd  = p.stageDimensions.depth;
+    const PPM = Math.min(100, Math.floor(2000 / Math.max(sw, sd))); // px/m, max 2000px edge
+    const W   = Math.round(sw * PPM);
+    const H   = Math.round(sd * PPM);
+
+    const canvas = document.createElement('canvas');
+    canvas.width  = W;
+    canvas.height = H;
+    const ctx   = canvas.getContext('2d');
+    const scene = p.scenes[p.currentSceneIndex];
+
+    function draw(bg) {
+      /* background */
+      if (bg) {
+        ctx.drawImage(bg, 0, 0, W, H);
+      } else {
+        const g = ctx.createLinearGradient(0, 0, 0, H);
+        g.addColorStop(0, '#1c1c3a');
+        g.addColorStop(1, '#272748');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+      }
+
+      /* grid */
+      if (p.settings.gridVisible) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+        ctx.lineWidth   = 1;
+        for (let x = p.settings.gridSize * PPM; x < W; x += p.settings.gridSize * PPM) {
+          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+        }
+        for (let y = p.settings.gridSize * PPM; y < H; y += p.settings.gridSize * PPM) {
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+        }
+      }
+
+      /* performers */
+      ctx.textAlign = 'center';
+      for (const perf of p.performers) {
+        const pos = scene.positions[perf.id];
+        if (!pos || pos.visible === false) continue;
+        const ti = TYPES[perf.type] || TYPES.child;
+        const cx = pos.x * PPM;
+        const cy = pos.y * PPM;
+        const r  = (ti.widthM / 2) * PPM;
+
+        ctx.shadowColor = 'rgba(0,0,0,0.45)';
+        ctx.shadowBlur  = 8;
+        ctx.fillStyle   = perf.color;
+
+        if (ti.shape === 'rect') {
+          ctx.beginPath();
+          ctx.roundRect ? ctx.roundRect(cx - r, cy - r, r * 2, r * 2, 4) : ctx.rect(cx - r, cy - r, r * 2, r * 2);
+          ctx.fill();
+          ctx.shadowBlur  = 0;
+          ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+          ctx.lineWidth   = 1.5;
+          ctx.stroke();
+        } else {
+          ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+          ctx.shadowBlur  = 0;
+          ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+          ctx.lineWidth   = 1.5;
+          ctx.stroke();
+        }
+        ctx.shadowBlur = 0;
+
+        /* name */
+        const lfs = Math.max(9, r * 0.85);
+        ctx.font        = `bold ${lfs}px sans-serif`;
+        ctx.fillStyle   = '#fff';
+        ctx.shadowColor = 'rgba(0,0,0,0.8)';
+        ctx.shadowBlur  = 4;
+        ctx.fillText(perf.name, cx, cy + r + lfs + 2);
+        ctx.shadowBlur = 0;
+      }
+
+      /* stage border */
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth   = 2;
+      ctx.strokeRect(1, 1, W - 2, H - 2);
+
+      /* 1m ruler */
+      const rx  = 16;
+      const ry  = H - 16;
+      const rln = PPM;
+      ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+      ctx.lineWidth   = 2;
+      ctx.beginPath();
+      ctx.moveTo(rx, ry); ctx.lineTo(rx + rln, ry);
+      ctx.moveTo(rx, ry - 5); ctx.lineTo(rx, ry + 5);
+      ctx.moveTo(rx + rln, ry - 5); ctx.lineTo(rx + rln, ry + 5);
+      ctx.stroke();
+      ctx.fillStyle   = 'rgba(255,255,255,0.65)';
+      ctx.font        = '11px sans-serif';
+      ctx.textAlign   = 'center';
+      ctx.fillText('1 m', rx + rln / 2, ry - 8);
+
+      /* scene label */
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.font      = '13px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(scene.name, 10, 18);
+
+      /* stage dims */
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.font      = '11px sans-serif';
+      ctx.fillText(`${sw} m × ${sd} m`, 10, H - 8);
+
+      /* download */
+      const a   = document.createElement('a');
+      const nm  = scene.name.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+      a.download = `stage-${nm}.png`;
+      a.href     = canvas.toDataURL('image/png');
+      a.click();
+    }
+
+    if (p.backgroundImage) {
+      const img  = new Image();
+      img.onload = () => draw(img);
+      img.onerror = () => draw(null);
+      img.src    = p.backgroundImage;
+    } else {
+      draw(null);
+    }
+  }
+
+  return { exportPNG };
+})();
+
+/* ============================================================
+   MEASURE TOOL
+============================================================ */
+const MeasureTool = (() => {
+  let _active = false;
+  let _pts    = [];  // world coords
+
+  function toggle() {
+    _active = !_active;
+    _pts    = [];
+    document.getElementById('measure-layer').innerHTML = '';
+    document.getElementById('stage-svg').style.cursor = _active ? 'crosshair' : '';
+    document.getElementById('measure-result').textContent =
+      _active ? 'Click two points on stage' : 'Enable 📐 then click two points';
+  }
+
+  function handleClick(svgPt) {
+    const w = Transform.screenToWorld(svgPt.x, svgPt.y);
+    if (_pts.length >= 2) _pts = [];
+    _pts.push({ x: w.x, y: w.y });
+    renderLayer();
+    if (_pts.length === 2) {
+      const dx   = _pts[1].x - _pts[0].x;
+      const dy   = _pts[1].y - _pts[0].y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      document.getElementById('measure-result').textContent = `Distance: ${dist.toFixed(2)} m`;
+    } else {
+      document.getElementById('measure-result').textContent = 'Click second point…';
+    }
+  }
+
+  /* measure-layer is inside viewport → world coordinates */
+  function renderLayer() {
+    const layer = document.getElementById('measure-layer');
+    layer.innerHTML = '';
+    if (!_active || !_pts.length) return;
+
+    const sc  = Transform.getScale();
+    const r   = 5  / sc;
+    const sw  = 2  / sc;
+
+    for (const pt of _pts) {
+      layer.appendChild(makeSVGEl('circle', {
+        cx: pt.x, cy: pt.y, r,
+        fill: '#f1c40f', stroke: '#fff', 'stroke-width': sw,
+        'vector-effect': 'non-scaling-stroke',
+      }));
+    }
+
+    if (_pts.length >= 2) {
+      layer.appendChild(makeSVGEl('line', {
+        x1: _pts[0].x, y1: _pts[0].y, x2: _pts[1].x, y2: _pts[1].y,
+        stroke: '#f1c40f', 'stroke-width': sw, 'vector-effect': 'non-scaling-stroke',
+        'stroke-dasharray': `${8 / sc} ${4 / sc}`,
+      }));
+
+      const mx  = (_pts[0].x + _pts[1].x) / 2;
+      const my  = (_pts[0].y + _pts[1].y) / 2;
+      const dx  = _pts[1].x - _pts[0].x;
+      const dy  = _pts[1].y - _pts[0].y;
+      const d   = Math.sqrt(dx * dx + dy * dy);
+      const fs  = 11 / sc;
+      layer.appendChild(makeSVGEl('text', {
+        x: mx, y: my - 4 / sc, 'font-size': fs,
+        fill: '#f1c40f', 'text-anchor': 'middle', 'dominant-baseline': 'auto',
+        'paint-order': 'stroke', stroke: 'rgba(0,0,0,0.7)',
+        'stroke-width': fs * 0.3, 'stroke-linejoin': 'round', 'pointer-events': 'none',
+      }, `${d.toFixed(2)} m`));
+    }
+  }
+
+  return { get active() { return _active; }, toggle, handleClick, renderLayer };
+})();
+
+/* ============================================================
+   UI  — DOM event wiring + sync helpers
+============================================================ */
+const UI = (() => {
+  let _selId = null;
+
+  /* ─────── INIT ─────── */
+  function init() {
+    State.init();
+    DragDrop.init();
+    _bindToolbar();
+    _bindSidebar();
+    _bindModal();
+    _bindKeyboard();
+    _bindResize();
+    syncAll();
+    requestAnimationFrame(() => Transform.fitToWindow());
+  }
+
+  /* ─────── TOOLBAR BINDINGS ─────── */
+  function _bindToolbar() {
+    _on('scene-select',    'change',  e => { if (!Animator.isPlaying) SceneManager.switchTo(+e.target.value); });
+    _on('btn-add-scene',   'click',   ()  => { if (!Animator.isPlaying) SceneManager.addScene(); });
+    _on('btn-rename-scene','click',   ()  => {
+      if (Animator.isPlaying) return;
+      const p   = State.p;
+      const cur = p.scenes[p.currentSceneIndex];
+      const n   = prompt('Scene name:', cur.name);
+      if (n !== null) SceneManager.renameScene(n);
+    });
+    _on('btn-dup-scene',   'click',   ()  => { if (!Animator.isPlaying) SceneManager.duplicateScene(); });
+    _on('btn-del-scene',   'click',   ()  => {
+      if (Animator.isPlaying) return;
+      if (State.p.scenes.length <= 1) { alert('Cannot delete the last scene.'); return; }
+      if (confirm(`Delete "${State.p.scenes[State.p.currentSceneIndex].name}"?`)) SceneManager.deleteScene();
+    });
+
+    _on('btn-play', 'click', () => Animator.play());
+    _on('btn-stop', 'click', () => Animator.stop());
+
+    _on('btn-zoom-in',  'click', () => _zoomCenter(1.25));
+    _on('btn-zoom-out', 'click', () => _zoomCenter(0.8));
+    _on('btn-zoom-fit', 'click', () => Transform.fitToWindow());
+
+    _on('btn-grid', 'click', () => {
+      State.p.settings.gridVisible = !State.p.settings.gridVisible;
+      _syncToggle('btn-grid', State.p.settings.gridVisible);
+      Renderer.render(); Persistence.save();
+    });
+    _on('btn-snap', 'click', () => {
+      State.p.settings.snapToGrid = !State.p.settings.snapToGrid;
+      _syncToggle('btn-snap', State.p.settings.snapToGrid);
+      Persistence.save();
+    });
+    _on('btn-measure', 'click', () => {
+      MeasureTool.toggle();
+      _syncToggle('btn-measure', MeasureTool.active);
+    });
+
+    _on('btn-undo', 'click', () => State.undo());
+    _on('btn-redo', 'click', () => State.redo());
+    _on('btn-export', 'click', () => Exporter.exportPNG());
+    _on('btn-fullscreen', 'click', () => {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
+      else document.exitFullscreen();
+    });
+  }
+
+  /* ─────── SIDEBAR BINDINGS ─────── */
+  function _bindSidebar() {
+    _on('btn-add-performer', 'click', _showModal);
+
+    _on('stage-width', 'change', e => {
+      const v = parseFloat(e.target.value);
+      if (v > 0 && v !== State.p.stageDimensions.width) {
+        State.pushUndo();
+        State.p.stageDimensions.width = v;
+        Transform.fitToWindow();
+        Persistence.save();
+      }
+    });
+    _on('stage-depth', 'change', e => {
+      const v = parseFloat(e.target.value);
+      if (v > 0 && v !== State.p.stageDimensions.depth) {
+        State.pushUndo();
+        State.p.stageDimensions.depth = v;
+        Transform.fitToWindow();
+        Persistence.save();
+      }
+    });
+
+    _on('btn-upload-bg', 'click', () => document.getElementById('bg-file-input').click());
+    _on('bg-file-input', 'change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const fr = new FileReader();
+      fr.onload = ev => {
+        State.pushUndo();
+        State.p.backgroundImage = ev.target.result;
+        Renderer.render();
+        Persistence.save();
+      };
+      fr.readAsDataURL(file);
+      e.target.value = '';
+    });
+    _on('btn-clear-bg', 'click', () => {
+      if (!State.p.backgroundImage) return;
+      State.pushUndo();
+      State.p.backgroundImage = null;
+      Renderer.render();
+      Persistence.save();
+    });
+
+    _on('anim-duration', 'change', e => {
+      const v = parseFloat(e.target.value);
+      if (v > 0) { State.p.settings.animDurationMs = v * 1000; Persistence.save(); }
+    });
+
+    /* selected performer fields */
+    _on('sel-name', 'change', e => {
+      if (!_selId) return;
+      const p = State.p;
+      const perf = p.performers.find(pf => pf.id === _selId);
+      if (!perf) return;
+      const trimmed = e.target.value.trim();
+      if (!trimmed) { e.target.value = perf.name; return; }
+      State.pushUndo();
+      perf.name = trimmed;
+      Renderer.renderPerformers(); syncPerformerList(); Persistence.save();
+    });
+    _on('sel-color', 'input', e => {
+      if (!_selId) return;
+      const perf = State.p.performers.find(pf => pf.id === _selId);
+      if (perf) { perf.color = e.target.value; Renderer.renderPerformers(); syncPerformerList(); }
+    });
+    _on('sel-color', 'change', () => { if (_selId) { State.pushUndo(); Persistence.save(); } });
+    _on('sel-type', 'change', e => {
+      if (!_selId) return;
+      State.pushUndo();
+      const perf = State.p.performers.find(pf => pf.id === _selId);
+      if (perf) {
+        perf.type   = e.target.value;
+        const ti    = TYPES[perf.type];
+        perf.widthM = ti.widthM; perf.heightM = ti.heightM;
+        Renderer.render(); Persistence.save();
+      }
+    });
+    _on('sel-visible', 'change', e => {
+      if (!_selId) return;
+      State.pushUndo();
+      const p   = State.p;
+      const pos = p.scenes[p.currentSceneIndex].positions[_selId];
+      if (pos) { pos.visible = e.target.checked; Renderer.renderPerformers(); Persistence.save(); }
+    });
+    _on('sel-x', 'change', e => {
+      if (!_selId) return;
+      State.pushUndo();
+      const p    = State.p;
+      const perf = p.performers.find(pf => pf.id === _selId);
+      const pos  = p.scenes[p.currentSceneIndex].positions[_selId];
+      if (pos && perf) {
+        const r = (TYPES[perf.type] || TYPES.child).widthM / 2;
+        pos.x   = clamp(+e.target.value || 0, r, p.stageDimensions.width - r);
+        Renderer.renderPerformers(); Persistence.save();
+      }
+    });
+    _on('sel-y', 'change', e => {
+      if (!_selId) return;
+      State.pushUndo();
+      const p    = State.p;
+      const perf = p.performers.find(pf => pf.id === _selId);
+      const pos  = p.scenes[p.currentSceneIndex].positions[_selId];
+      if (pos && perf) {
+        const r = (TYPES[perf.type] || TYPES.child).widthM / 2;
+        pos.y   = clamp(+e.target.value || 0, r, p.stageDimensions.depth - r);
+        Renderer.renderPerformers(); Persistence.save();
+      }
+    });
+    _on('btn-delete-selected', 'click', () => {
+      if (!_selId) return;
+      if (!confirm('Delete this performer from all scenes?')) return;
+      State.pushUndo();
+      State.p.performers = State.p.performers.filter(pf => pf.id !== _selId);
+      SceneManager.removePerformerPositions(_selId);
+      selectPerformer(null);
+      Renderer.render(); syncPerformerList(); Persistence.save();
+    });
+  }
+
+  /* ─────── MODAL BINDINGS ─────── */
+  function _bindModal() {
+    const presetBox = document.getElementById('color-presets');
+    for (const color of PRESET_COLORS) {
+      const dot = document.createElement('div');
+      dot.className = 'color-preset';
+      dot.style.background = color;
+      dot.title = color;
+      dot.addEventListener('click', () => { document.getElementById('new-color').value = color; });
+      presetBox.appendChild(dot);
+    }
+    _on('btn-modal-cancel', 'click', _hideModal);
+    _on('btn-modal-ok',     'click', _confirmAdd);
+    document.getElementById('modal-overlay').addEventListener('click', e => {
+      if (e.target.id === 'modal-overlay') _hideModal();
+    });
+    _on('new-name', 'keydown', e => {
+      if (e.key === 'Enter')  { e.preventDefault(); _confirmAdd(); }
+      if (e.key === 'Escape') _hideModal();
+    });
+  }
+
+  /* ─────── KEYBOARD ─────── */
+  function _bindKeyboard() {
+    document.addEventListener('keydown', e => {
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') { e.preventDefault(); State.undo(); }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); State.redo(); }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && _selId) {
+        e.preventDefault(); document.getElementById('btn-delete-selected').click();
+      }
+      if (e.key === 'f') Transform.fitToWindow();
+      if (e.key === 'g') document.getElementById('btn-grid').click();
+      if (e.key === 'Escape') {
+        selectPerformer(null);
+        if (MeasureTool.active) { MeasureTool.toggle(); _syncToggle('btn-measure', false); }
+      }
+    });
+  }
+
+  /* ─────── RESIZE ─────── */
+  function _bindResize() {
+    let timer;
+    const handler = () => { clearTimeout(timer); timer = setTimeout(() => Transform.fitToWindow(), 80); };
+    if (window.ResizeObserver) {
+      new ResizeObserver(handler).observe(document.getElementById('stage-area'));
+    } else {
+      window.addEventListener('resize', handler);
+    }
+  }
+
+  /* ─────── MODAL LOGIC ─────── */
+  function _showModal() {
+    const p    = State.p;
+    const used = new Set(p.performers.map(pf => pf.color));
+    const next = PRESET_COLORS.find(c => !used.has(c)) || PRESET_COLORS[p.performers.length % PRESET_COLORS.length];
+    document.getElementById('new-color').value = next;
+    document.getElementById('new-name').value  = '';
+    document.getElementById('new-type').value  = 'child';
+    document.getElementById('new-name').classList.remove('error');
+    document.getElementById('modal-overlay').classList.remove('hidden');
+    setTimeout(() => document.getElementById('new-name').focus(), 40);
+  }
+
+  function _hideModal() {
+    document.getElementById('modal-overlay').classList.add('hidden');
+  }
+
+  function _confirmAdd() {
+    const nameEl = document.getElementById('new-name');
+    const name   = nameEl.value.trim();
+    if (!name) { nameEl.classList.add('error'); nameEl.focus(); return; }
+    nameEl.classList.remove('error');
+
+    const color = document.getElementById('new-color').value;
+    const type  = document.getElementById('new-type').value;
+    const ti    = TYPES[type];
+    const id    = uid();
+
+    State.pushUndo();
+    State.p.performers.push({ id, name, color, type, widthM: ti.widthM, heightM: ti.heightM });
+    SceneManager.ensurePerformerPositions(id);
+    _hideModal();
+    Renderer.render();
+    syncPerformerList();
+    selectPerformer(id);
+    Persistence.save();
+  }
+
+  /* ─────── PUBLIC HELPERS ─────── */
+  function selectPerformer(id) {
+    _selId = id;
+    _syncSelectedSection();
+    Renderer.renderPerformers();
+    syncPerformerList();
+  }
+
+  function syncSceneSelect() {
+    const p   = State.p;
+    const sel = document.getElementById('scene-select');
+    sel.innerHTML = '';
+    p.scenes.forEach((s, i) => {
+      const opt = document.createElement('option');
+      opt.value = i;
+      opt.textContent = s.name;
+      sel.appendChild(opt);
+    });
+    sel.value = p.currentSceneIndex;
+  }
+
+  function syncPerformerList() {
+    const ul = document.getElementById('performer-list');
+    ul.innerHTML = '';
+    for (const perf of State.p.performers) {
+      const li   = document.createElement('li');
+      li.className = 'performer-item' + (perf.id === _selId ? ' selected' : '');
+
+      const ti   = TYPES[perf.type] || TYPES.child;
+      const dot  = document.createElement('div');
+      dot.className = 'performer-dot' + (ti.shape === 'rect' ? ' square' : '');
+      dot.style.background = perf.color;
+
+      const nm   = document.createElement('span');
+      nm.className = 'performer-name';
+      nm.textContent = perf.name;
+
+      const bdg  = document.createElement('span');
+      bdg.className = 'performer-type-badge';
+      bdg.textContent = { child: '', adult: 'A', teacher: 'T' }[perf.type] ?? '';
+
+      li.append(dot, nm, bdg);
+      li.addEventListener('click', () => selectPerformer(perf.id));
+      ul.appendChild(li);
+    }
+  }
+
+  function syncZoomLabel() {
+    document.getElementById('zoom-label').textContent = Transform.getZoomPct();
+  }
+
+  function syncSelectedPos() {
+    if (!_selId) return;
+    const pos = State.p.scenes[State.p.currentSceneIndex].positions[_selId];
+    if (!pos) return;
+    document.getElementById('sel-x').value = pos.x.toFixed(2);
+    document.getElementById('sel-y').value = pos.y.toFixed(2);
+  }
+
+  function syncAll() {
+    syncSceneSelect();
+    syncPerformerList();
+    _syncSelectedSection();
+    _syncStageInputs();
+    _syncToggle('btn-grid',    State.p.settings.gridVisible);
+    _syncToggle('btn-snap',    State.p.settings.snapToGrid);
+    _syncToggle('btn-measure', MeasureTool.active);
+  }
+
+  /* ─────── PRIVATE SYNC ─────── */
+  function _syncSelectedSection() {
+    const sec = document.getElementById('selected-section');
+    if (!_selId) { sec.style.display = 'none'; return; }
+    const p    = State.p;
+    const perf = p.performers.find(pf => pf.id === _selId);
+    if (!perf) { sec.style.display = 'none'; return; }
+    sec.style.display = '';
+    const pos  = p.scenes[p.currentSceneIndex].positions[_selId] || { x: 0, y: 0, visible: true };
+    document.getElementById('sel-name').value    = perf.name;
+    document.getElementById('sel-color').value   = perf.color;
+    document.getElementById('sel-type').value    = perf.type;
+    document.getElementById('sel-visible').checked = pos.visible !== false;
+    document.getElementById('sel-x').value       = pos.x.toFixed(2);
+    document.getElementById('sel-y').value       = pos.y.toFixed(2);
+  }
+
+  function _syncStageInputs() {
+    const p = State.p;
+    document.getElementById('stage-width').value  = p.stageDimensions.width;
+    document.getElementById('stage-depth').value  = p.stageDimensions.depth;
+    document.getElementById('anim-duration').value = (p.settings.animDurationMs / 1000).toFixed(1);
+  }
+
+  function _syncToggle(id, active) {
+    document.getElementById(id).classList.toggle('active', !!active);
+  }
+
+  function _zoomCenter(factor) {
+    const r = document.getElementById('stage-svg').getBoundingClientRect();
+    Transform.zoomAt(factor, r.width / 2, r.height / 2);
+  }
+
+  function _on(id, event, handler) {
+    document.getElementById(id)?.addEventListener(event, handler);
+  }
+
+  return {
+    init,
+    syncAll, syncSceneSelect, syncPerformerList, syncZoomLabel, syncSelectedPos,
+    selectPerformer,
+    get selectedId() { return _selId; },
+  };
+})();
+
+/* ============================================================
+   BOOTSTRAP
+============================================================ */
+document.addEventListener('DOMContentLoaded', () => UI.init());
