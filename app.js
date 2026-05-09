@@ -912,6 +912,135 @@ const Exporter = (() => {
 })();
 
 /* ============================================================
+   PROJECT I/O  — JSON export & import
+============================================================ */
+const ProjectIO = (() => {
+
+  /* ── EXPORT ── */
+  function exportJSON() {
+    const p  = State.p;
+
+    // Deep-copy and strip background image (user backs it up separately)
+    const data = JSON.parse(JSON.stringify(p));
+    data.backgroundImage = null;
+    data._exportedAt     = new Date().toISOString();
+    data._version        = 1;
+
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    const date = new Date().toISOString().slice(0, 10);
+    a.download = `stage-formation-${date}.json`;
+    a.href     = url;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  /* ── VALIDATE ── */
+  function _validate(p) {
+    const errs = [];
+    if (!p || typeof p !== 'object' || Array.isArray(p)) {
+      return ['文件内容不是有效的 JSON 对象 (Not a valid JSON object)'];
+    }
+
+    if (!p.stageDimensions || typeof p.stageDimensions.width  !== 'number'
+                           || typeof p.stageDimensions.depth  !== 'number') {
+      errs.push('缺少 stageDimensions.width / depth (Missing stage dimensions)');
+    }
+    if (!Array.isArray(p.performers)) {
+      errs.push('缺少 performers 数组 (Missing performers array)');
+    }
+    if (!Array.isArray(p.scenes) || p.scenes.length === 0) {
+      errs.push('缺少 scenes 数组或为空 (Missing or empty scenes array)');
+    } else {
+      p.scenes.forEach((s, i) => {
+        const label = `Scene[${i}] "${s.name ?? ''}"`;
+        if (typeof s.id   !== 'string') errs.push(`${label}: 缺少 id`);
+        if (typeof s.name !== 'string') errs.push(`${label}: 缺少 name`);
+        if (!s.positions || typeof s.positions !== 'object') {
+          errs.push(`${label}: 缺少 positions 对象`);
+        }
+      });
+    }
+    if (Array.isArray(p.performers)) {
+      p.performers.forEach((pf, i) => {
+        if (typeof pf.id    !== 'string') errs.push(`Performer[${i}]: 缺少 id`);
+        if (typeof pf.name  !== 'string') errs.push(`Performer[${i}]: 缺少 name`);
+        if (typeof pf.color !== 'string') errs.push(`Performer[${i}]: 缺少 color`);
+      });
+    }
+    return errs;
+  }
+
+  /* ── IMPORT ── */
+  function importFromFile(file) {
+    const reader = new FileReader();
+    reader.onload = ev => {
+      let parsed;
+      // --- Parse ---
+      try {
+        parsed = JSON.parse(ev.target.result);
+      } catch (e) {
+        _showError('JSON 解析失败 (Parse error)', [e.message]);
+        return;
+      }
+
+      // --- Validate ---
+      const errs = _validate(parsed);
+      if (errs.length) {
+        _showError('文件格式有误 (Invalid format)', errs);
+        return;
+      }
+
+      // --- Migrate / fill defaults ---
+      if (!parsed.settings)                       parsed.settings = {};
+      if (parsed.settings.animDurationMs == null) parsed.settings.animDurationMs = 3000;
+      if (parsed.settings.gridVisible    == null) parsed.settings.gridVisible    = true;
+      if (parsed.settings.snapToGrid     == null) parsed.settings.snapToGrid     = false;
+      if (parsed.settings.gridSize       == null) parsed.settings.gridSize       = 1;
+      parsed.backgroundImage = null;    // never imported
+      parsed.currentSceneIndex = clamp(parsed.currentSceneIndex ?? 0, 0, parsed.scenes.length - 1);
+
+      // Ensure every performer has widthM/heightM
+      for (const pf of parsed.performers) {
+        const ti  = TYPES[pf.type] || TYPES.child;
+        if (pf.widthM  == null) pf.widthM  = ti.widthM;
+        if (pf.heightM == null) pf.heightM = ti.heightM;
+        if (!pf.type) pf.type = 'child';
+      }
+
+      // --- Load ---
+      State.pushUndo();
+      State.p = parsed;
+      Persistence.save();
+      Transform.fitToWindow();   // also calls Renderer.render()
+      UI.syncAll();
+
+      _showSuccess(`已导入：${parsed.scenes.length} 个场景，${parsed.performers.length} 名演员`);
+    };
+
+    reader.onerror = () => _showError('文件读取失败 (File read error)', [reader.error?.message ?? '']);
+    reader.readAsText(file);
+  }
+
+  /* ── FEEDBACK HELPERS ── */
+  function _showError(title, lines) {
+    alert(`⚠️ ${title}\n\n${lines.map((l, i) => `${i + 1}. ${l}`).join('\n')}`);
+  }
+
+  function _showSuccess(msg) {
+    // Brief status banner inside stage area
+    const banner     = document.createElement('div');
+    banner.className = 'io-toast io-toast-ok';
+    banner.textContent = '✓ ' + msg;
+    document.getElementById('stage-area').appendChild(banner);
+    setTimeout(() => banner.remove(), 2800);
+  }
+
+  return { exportJSON, importFromFile };
+})();
+
+/* ============================================================
    MEASURE TOOL
 ============================================================ */
 const MeasureTool = (() => {
@@ -1046,6 +1175,15 @@ const UI = (() => {
 
     _on('btn-undo', 'click', () => State.undo());
     _on('btn-redo', 'click', () => State.redo());
+
+    _on('btn-export-json', 'click', () => ProjectIO.exportJSON());
+    _on('btn-import-json', 'click', () => document.getElementById('json-file-input').click());
+    _on('json-file-input', 'change', e => {
+      const file = e.target.files[0];
+      if (file) ProjectIO.importFromFile(file);
+      e.target.value = '';
+    });
+
     _on('btn-export', 'click', () => Exporter.exportPNG());
     _on('btn-fullscreen', 'click', () => {
       if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
