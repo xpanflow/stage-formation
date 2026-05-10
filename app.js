@@ -1169,6 +1169,7 @@ const UI = (() => {
     State.init();
     DragDrop.init();
     _bindToolbar();
+    _bindScenePanel();
     _bindSidebar();
     _bindModal();
     _bindKeyboard();
@@ -1179,22 +1180,6 @@ const UI = (() => {
 
   /* ─────── TOOLBAR BINDINGS ─────── */
   function _bindToolbar() {
-    _on('scene-select',    'change',  e => { if (!Animator.isPlaying) SceneManager.switchTo(+e.target.value); });
-    _on('btn-add-scene',   'click',   ()  => { if (!Animator.isPlaying) SceneManager.addScene(); });
-    _on('btn-rename-scene','click',   ()  => {
-      if (Animator.isPlaying) return;
-      const p   = State.p;
-      const cur = p.scenes[p.currentSceneIndex];
-      const n   = prompt('Scene name:', cur.name);
-      if (n !== null) SceneManager.renameScene(n);
-    });
-    _on('btn-dup-scene',   'click',   ()  => { if (!Animator.isPlaying) SceneManager.duplicateScene(); });
-    _on('btn-del-scene',   'click',   ()  => {
-      if (Animator.isPlaying) return;
-      if (State.p.scenes.length <= 1) { alert('Cannot delete the last scene.'); return; }
-      if (confirm(`Delete "${State.p.scenes[State.p.currentSceneIndex].name}"?`)) SceneManager.deleteScene();
-    });
-
     _on('btn-play', 'click', () => Animator.play());
     _on('btn-stop', 'click', () => Animator.stop());
 
@@ -1258,6 +1243,67 @@ const UI = (() => {
     _on('btn-fullscreen', 'click', () => {
       if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
       else document.exitFullscreen();
+    });
+  }
+
+  /* ─────── SCENE PANEL BINDINGS (left tab + right sidebar) ─────── */
+  function _bindScenePanel() {
+    // Left-sidebar tab switching
+    document.querySelectorAll('.left-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.left-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        const target = tab.dataset.tab;
+        document.querySelectorAll('.left-tab-pane').forEach(p => {
+          p.classList.toggle('hidden', p.id !== 'tab-' + target);
+        });
+      });
+    });
+
+    // Add scene (left sidebar button)
+    _on('btn-add-scene', 'click', () => {
+      if (Animator.isPlaying) return;
+      SceneManager.addScene();
+      // Auto-switch to Scenes tab so the new scene is visible
+      document.querySelectorAll('.left-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'scenes'));
+      document.querySelectorAll('.left-tab-pane').forEach(p => p.classList.toggle('hidden', p.id !== 'tab-scenes'));
+    });
+
+    // Scene list click delegation
+    const sceneListEl = document.getElementById('scene-list');
+    if (sceneListEl) {
+      sceneListEl.addEventListener('click', e => {
+        if (Animator.isPlaying) return;
+        const li = e.target.closest('.scene-item');
+        if (!li) return;
+        const idx = parseInt(li.dataset.index, 10);
+        if (!isNaN(idx)) SceneManager.switchTo(idx);
+      });
+    }
+
+    // Scene name input (right sidebar)
+    _on('scene-name-input', 'change', e => {
+      if (Animator.isPlaying) return;
+      const name = e.target.value.trim();
+      const cur  = State.p.scenes[State.p.currentSceneIndex];
+      if (!cur) return;
+      if (!name) {
+        e.target.value = cur.name;
+        return;
+      }
+      SceneManager.renameScene(name);
+    });
+
+    // Duplicate scene (right sidebar)
+    _on('btn-dup-scene', 'click', () => {
+      if (!Animator.isPlaying) SceneManager.duplicateScene();
+    });
+
+    // Delete scene (right sidebar)
+    _on('btn-del-scene', 'click', () => {
+      if (Animator.isPlaying) return;
+      if (State.p.scenes.length <= 1) { alert('Cannot delete the last scene.'); return; }
+      if (confirm(`Delete "${State.p.scenes[State.p.currentSceneIndex].name}"?`)) SceneManager.deleteScene();
     });
   }
 
@@ -1515,17 +1561,36 @@ const UI = (() => {
     syncPerformerList();
   }
 
-  function syncSceneSelect() {
+  function syncSceneSelect() { syncSceneList(); }
+
+  function syncSceneList() {
     const p   = State.p;
-    const sel = document.getElementById('scene-select');
-    sel.innerHTML = '';
+    const ul  = document.getElementById('scene-list');
+    if (!ul) return;
+    ul.innerHTML = '';
     p.scenes.forEach((s, i) => {
-      const opt = document.createElement('option');
-      opt.value = i;
-      opt.textContent = s.name;
-      sel.appendChild(opt);
+      const li  = document.createElement('li');
+      li.className = 'scene-item' + (i === p.currentSceneIndex ? ' selected' : '');
+      li.dataset.index = i;
+
+      const num = document.createElement('span');
+      num.className = 'scene-num';
+      num.textContent = i + 1;
+
+      const nm  = document.createElement('span');
+      nm.className = 'scene-name';
+      nm.textContent = s.name;
+
+      li.append(num, nm);
+      ul.appendChild(li);
     });
-    sel.value = p.currentSceneIndex;
+
+    // Update right-sidebar scene name input
+    const nameInput = document.getElementById('scene-name-input');
+    if (nameInput) {
+      const cur = p.scenes[p.currentSceneIndex];
+      nameInput.value = cur ? cur.name : '';
+    }
   }
 
   function syncPerformerList() {
@@ -1575,7 +1640,7 @@ const UI = (() => {
   }
 
   function syncAll() {
-    syncSceneSelect();
+    syncSceneList();
     syncPerformerList();
     _syncSelectedSection();
     _syncStageInputs();
@@ -1586,13 +1651,33 @@ const UI = (() => {
     MusicPlayer.renderTimeline();
   }
 
+  /* Toggle selected row + name field only — avoids rebuilding the whole
+     scene list on every music-driven index change (scroll jump / flicker). */
+  function _syncSceneListSelectionOnly() {
+    const p  = State.p;
+    const ul = document.getElementById('scene-list');
+    if (!ul) return;
+    const items = ul.querySelectorAll('.scene-item');
+    if (items.length !== p.scenes.length) {
+      syncSceneList();
+      return;
+    }
+    items.forEach((li, i) => {
+      li.classList.toggle('selected', i === p.currentSceneIndex);
+    });
+    const nameInput = document.getElementById('scene-name-input');
+    if (nameInput) {
+      const cur = p.scenes[p.currentSceneIndex];
+      nameInput.value = cur ? cur.name : '';
+    }
+  }
+
   /* Lightweight sync for music-driven scene changes — only touches widgets
      that depend on the current scene index. Avoids rebuilding the performer
      list / scene marker DOM every transition (which would steal focus and
      cause flicker during playback). */
   function syncCurrentScene() {
-    const sel = document.getElementById('scene-select');
-    if (sel) sel.value = State.p.currentSceneIndex;
+    _syncSceneListSelectionOnly();
     syncSceneNote();
     _syncStageInputs();
     syncSelectedPos();
@@ -1646,7 +1731,7 @@ const UI = (() => {
 
   return {
     init,
-    syncAll, syncCurrentScene, syncSceneSelect, syncPerformerList, syncSceneNote, syncZoomLabel, syncSelectedPos,
+    syncAll, syncCurrentScene, syncSceneSelect, syncSceneList, syncPerformerList, syncSceneNote, syncZoomLabel, syncSelectedPos,
     selectPerformer,
     get selectedId() { return _selId; },
   };

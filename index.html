@@ -18,24 +18,6 @@
 
       <div class="toolbar-sep"></div>
 
-      <div class="toolbar-group" id="scene-controls">
-        <span class="toolbar-label">Scene</span>
-        <select id="scene-select" title="Current scene"></select>
-        <button id="btn-add-scene" title="Add new scene">+ Scene</button>
-        <button id="btn-rename-scene" title="Rename scene" class="icon-btn">✏</button>
-        <button id="btn-dup-scene" title="Duplicate scene" class="icon-btn">⧉</button>
-        <button id="btn-del-scene" title="Delete scene" class="icon-btn">🗑</button>
-      </div>
-
-      <div class="toolbar-sep"></div>
-
-      <div class="toolbar-group">
-        <button id="btn-play" title="Animate transition to next scene" class="btn-accent">▶ Play</button>
-        <button id="btn-stop" title="Stop animation" class="btn-danger hidden">■ Stop</button>
-      </div>
-
-      <div class="toolbar-sep"></div>
-
       <div class="toolbar-group">
         <button id="btn-zoom-out" title="Zoom out">−</button>
         <span id="zoom-label" title="Zoom level">100%</span>
@@ -101,12 +83,27 @@
 
       <!-- LEFT SIDEBAR -->
       <aside id="left-sidebar">
-        <div class="sidebar-section">
-          <div class="sidebar-header">
-            <span>Performers</span>
-            <button id="btn-add-performer" class="btn-small btn-accent">+ Add</button>
+        <div class="left-tab-bar">
+          <button class="left-tab active" data-tab="performers">Performers</button>
+          <button class="left-tab" data-tab="scenes">Scenes</button>
+        </div>
+        <div class="left-tab-pane" id="tab-performers">
+          <div class="sidebar-section">
+            <div class="sidebar-header">
+              <span>Performers</span>
+              <button id="btn-add-performer" class="btn-small btn-accent">+ Add</button>
+            </div>
+            <ul id="performer-list"></ul>
           </div>
-          <ul id="performer-list"></ul>
+        </div>
+        <div class="left-tab-pane hidden" id="tab-scenes">
+          <div class="sidebar-section">
+            <div class="sidebar-header">
+              <span>Scenes</span>
+              <button id="btn-add-scene" class="btn-small btn-accent">+ Add</button>
+            </div>
+            <ul id="scene-list"></ul>
+          </div>
         </div>
       </aside>
 
@@ -206,6 +203,18 @@
           <button id="btn-clear-bg" class="full-btn secondary">✕ Clear</button>
         </div>
 
+        <div class="sidebar-section" id="scene-edit-section">
+          <div class="sidebar-header"><span>Scene</span></div>
+          <div class="field-row">
+            <label>Name</label>
+            <input type="text" id="scene-name-input" class="flex-inp">
+          </div>
+          <div class="field-row scene-edit-actions">
+            <button id="btn-dup-scene" class="btn-small" title="Duplicate this scene">⧉ Copy Down</button>
+            <button id="btn-del-scene" class="btn-small btn-danger" title="Delete this scene">🗑 Delete</button>
+          </div>
+        </div>
+
         <div class="sidebar-section">
           <div class="sidebar-header"><span>走位 Timing</span></div>
           <div class="field-row">
@@ -222,6 +231,8 @@
               <span class="unit">s</span>
             </div>
           </div>
+          <button id="btn-play" class="full-btn btn-accent" title="Preview walk from this scene to the next">▶ Play walk</button>
+          <button id="btn-stop" class="full-btn btn-danger hidden" title="Stop animation">■ Stop</button>
         </div>
 
         <div class="sidebar-section" id="measure-section">

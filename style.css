@@ -254,6 +254,9 @@ aside {
 #left-sidebar {
   width: var(--sidebar-l);
   border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: hidden;
 }
 
 #right-sidebar {
@@ -279,6 +282,86 @@ aside {
   text-transform: uppercase;
   letter-spacing: 0.8px;
   color: var(--text3);
+}
+
+/* ═══════════════════════════════════════════
+   LEFT SIDEBAR TABS
+═══════════════════════════════════════════ */
+.left-tab-bar {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.left-tab {
+  flex: 1;
+  padding: 7px 4px;
+  font-size: 12px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  color: var(--text2);
+  transition: color 0.12s, border-color 0.12s;
+}
+.left-tab:hover { color: var(--text); }
+.left-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.left-tab-pane {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.left-tab-pane.hidden { display: none; }
+
+/* ═══════════════════════════════════════════
+   SCENE LIST
+═══════════════════════════════════════════ */
+#scene-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.scene-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.1s, border-color 0.1s;
+}
+.scene-item:hover { background: var(--bg4); }
+.scene-item.selected {
+  background: rgba(74,158,255,0.1);
+  border-color: rgba(74,158,255,0.35);
+}
+.scene-num {
+  font-size: 11px;
+  color: var(--text3);
+  min-width: 16px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.scene-name {
+  flex: 1;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#scene-edit-section .scene-edit-actions {
+  gap: 6px;
+}
+#scene-edit-section .scene-edit-actions .btn-small {
+  flex: 1;
 }
 
 /* ═══════════════════════════════════════════
