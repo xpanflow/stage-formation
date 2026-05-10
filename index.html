@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Stage Formation Planner</title>
   <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js"></script>
 </head>
 <body>
   <div id="app">
@@ -62,9 +63,12 @@
       </div>
 
       <div class="toolbar-group">
-        <button id="btn-export-json" title="Save project as JSON file">↓ Export</button>
-        <button id="btn-import-json" title="Load project from JSON file">↑ Import</button>
+        <button id="btn-export-json" title="Save project as JSON file">↓ JSON</button>
+        <button id="btn-import-json" title="Load project from JSON file">↑ JSON</button>
         <input type="file" id="json-file-input" accept=".json,application/json" style="display:none">
+        <button id="btn-export-zip" title="Save full bundle (JSON + music + background) as ZIP">↓ ZIP</button>
+        <button id="btn-import-zip" title="Load project bundle from ZIP file">↑ ZIP</button>
+        <input type="file" id="zip-file-input" accept=".zip,application/zip" style="display:none">
       </div>
 
       <div class="toolbar-sep"></div>
@@ -140,6 +144,25 @@
         <div id="stage-coords">x: 0.0 m   y: 0.0 m</div>
         </main>
 
+        <!-- MUSIC PANEL -->
+        <div id="music-panel">
+          <div id="music-controls">
+            <button id="btn-music-load" title="Load MP3 file">♪ Load</button>
+            <input type="file" id="music-file-input" accept="audio/*" style="display:none">
+            <span id="music-filename" class="music-filename">No music loaded</span>
+            <button id="btn-music-play" class="music-play-btn" title="Play / Pause" disabled>▶</button>
+            <span id="music-time" class="music-time">0:00 / 0:00</span>
+          </div>
+          <div id="music-timeline-wrap">
+            <div id="music-timeline">
+              <div id="music-progress-fill"></div>
+              <div id="music-markers"></div>
+              <div id="music-thumb"></div>
+            </div>
+          </div>
+          <audio id="music-audio" preload="metadata"></audio>
+        </div>
+
         <!-- NOTES PANEL -->
         <div id="notes-panel">
           <div id="notes-resize-handle" title="Drag to resize"></div>
@@ -185,9 +208,16 @@
         <div class="sidebar-section">
           <div class="sidebar-header"><span>Animation</span></div>
           <div class="field-row">
-            <label>Duration</label>
+            <label title="When this scene's transition starts (seconds from music start)">Start</label>
             <div class="field-inp-wrap">
-              <input type="number" id="anim-duration" min="0.5" max="60" step="0.5" value="3">
+              <input type="number" id="scene-start-time" min="0" step="0.1" value="0">
+              <span class="unit">s</span>
+            </div>
+          </div>
+          <div class="field-row">
+            <label title="Duration of the transition animation into this scene">Duration</label>
+            <div class="field-inp-wrap">
+              <input type="number" id="anim-duration" min="0.1" max="60" step="0.5" value="3">
               <span class="unit">s</span>
             </div>
           </div>

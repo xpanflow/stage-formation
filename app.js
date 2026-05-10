@@ -19,6 +19,16 @@ function makeSVGEl(tag, attrs = {}, text) {
    CONSTANTS
 ============================================================ */
 const STORAGE_KEY = 'stageFormation_v1';
+
+/* ─── Recompute every scene's startTime from its animDurationMs chain ─── */
+function recomputeStartTimes() {
+  const p = State.p;
+  let t = 0;
+  for (const s of p.scenes) {
+    s.startTime = t;
+    t += (s.animDurationMs ?? p.settings.animDurationMs) / 1000;
+  }
+}
 const PADDING     = 48;   // px around stage at zoom=1
 
 const TYPES = {
@@ -46,7 +56,7 @@ const State = (() => {
       stageDimensions: { width: 10, depth: 6 },
       backgroundImage: null,
       performers: [],
-      scenes: [{ id: uid(), name: 'Scene 1', positions: {}, note: '' }],
+      scenes: [{ id: uid(), name: 'Scene 1', positions: {}, note: '', startTime: 0, animDurationMs: 3000 }],
       currentSceneIndex: 0,
       settings: {
         gridVisible:    true,
@@ -400,8 +410,9 @@ const Animator = (() => {
   function _tick(ts) {
     if (_startTime === null) _startTime = ts;
     const p       = State.p;
-    const elapsed = ts - _startTime;
-    const t       = easeInOut(Math.min(elapsed / p.settings.animDurationMs, 1));
+    const elapsed  = ts - _startTime;
+    const durMs    = p.scenes[p.currentSceneIndex]?.animDurationMs ?? p.settings.animDurationMs;
+    const t        = easeInOut(Math.min(elapsed / durMs, 1));
 
     for (const perf of p.performers) {
       const fr = _fromPos[perf.id];
@@ -414,7 +425,7 @@ const Animator = (() => {
     }
     Renderer.renderPerformers(_animPos);
 
-    if (elapsed < p.settings.animDurationMs) {
+    if (elapsed < durMs) {
       _rafId = requestAnimationFrame(_tick);
     } else {
       _finish();
@@ -653,32 +664,45 @@ const SceneManager = (() => {
   }
 
   function addScene() {
-    const p = State.p;
+    const p    = State.p;
     State.pushUndo();
-    const cur = p.scenes[p.currentSceneIndex];
+    const last = p.scenes[p.scenes.length - 1];
+    const newStartTime  = last.startTime + last.animDurationMs / 1000;
+    const newAnimDurMs  = last.animDurationMs ?? p.settings.animDurationMs;
     p.scenes.push({
       id: uid(),
       name: `Scene ${p.scenes.length + 1}`,
-      positions: JSON.parse(JSON.stringify(cur.positions)),
+      positions: JSON.parse(JSON.stringify(p.scenes[p.currentSceneIndex].positions)),
       note: '',
+      startTime: newStartTime,
+      animDurationMs: newAnimDurMs,
     });
     p.currentSceneIndex = p.scenes.length - 1;
     Persistence.save();
     UI.syncAll();
     Renderer.render();
+    MusicPlayer.renderTimeline();
   }
 
   function duplicateScene() {
     const p   = State.p;
     State.pushUndo();
     const cur = p.scenes[p.currentSceneIndex];
-    const dup = { id: uid(), name: cur.name + ' (copy)', positions: JSON.parse(JSON.stringify(cur.positions)), note: cur.note ?? '' };
+    const dup = {
+      id: uid(), name: cur.name + ' (copy)',
+      positions: JSON.parse(JSON.stringify(cur.positions)),
+      note: cur.note ?? '',
+      startTime: 0,
+      animDurationMs: cur.animDurationMs ?? p.settings.animDurationMs,
+    };
     const idx = p.currentSceneIndex + 1;
     p.scenes.splice(idx, 0, dup);
     p.currentSceneIndex = idx;
+    recomputeStartTimes();
     Persistence.save();
     UI.syncAll();
     Renderer.render();
+    MusicPlayer.renderTimeline();
   }
 
   function deleteScene() {
@@ -687,9 +711,11 @@ const SceneManager = (() => {
     State.pushUndo();
     p.scenes.splice(p.currentSceneIndex, 1);
     p.currentSceneIndex = clamp(p.currentSceneIndex, 0, p.scenes.length - 1);
+    recomputeStartTimes();
     Persistence.save();
     UI.syncAll();
     Renderer.render();
+    MusicPlayer.renderTimeline();
   }
 
   function renameScene(name) {
@@ -761,6 +787,16 @@ const Persistence = (() => {
       if (p.settings.gridVisible    == null)  p.settings.gridVisible    = true;
       if (p.settings.snapToGrid     == null)  p.settings.snapToGrid     = false;
       if (p.settings.gridSize       == null)  p.settings.gridSize       = 1;
+      // Migrate per-scene timing fields
+      if (Array.isArray(p.scenes)) {
+        let t = 0;
+        for (const s of p.scenes) {
+          if (s.animDurationMs == null) s.animDurationMs = p.settings.animDurationMs;
+          if (s.startTime      == null) s.startTime      = t;
+          t += s.animDurationMs / 1000;
+          if (s.note           == null) s.note           = '';
+        }
+      }
       const bg = localStorage.getItem(STORAGE_KEY + '_bg');
       if (bg) p.backgroundImage = bg;
       return p;
@@ -1205,6 +1241,14 @@ const UI = (() => {
       e.target.value = '';
     });
 
+    _on('btn-export-zip', 'click', () => ProjectBundle.exportZip());
+    _on('btn-import-zip', 'click', () => document.getElementById('zip-file-input').click());
+    _on('zip-file-input', 'change', e => {
+      const file = e.target.files[0];
+      if (file) ProjectBundle.importZip(file);
+      e.target.value = '';
+    });
+
     _on('btn-export', 'click', () => Exporter.exportPNG());
     _on('btn-fullscreen', 'click', () => {
       if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
@@ -1259,7 +1303,36 @@ const UI = (() => {
 
     _on('anim-duration', 'change', e => {
       const v = parseFloat(e.target.value);
-      if (v > 0) { State.p.settings.animDurationMs = v * 1000; Persistence.save(); }
+      if (v > 0) {
+        const p     = State.p;
+        const scene = p.scenes[p.currentSceneIndex];
+        if (scene) {
+          State.pushUndo();
+          scene.animDurationMs      = v * 1000;
+          p.settings.animDurationMs = v * 1000; // keep global default in sync
+          recomputeStartTimes();
+          Persistence.save();
+          MusicPlayer.renderTimeline();
+        }
+      }
+    });
+    _on('scene-start-time', 'change', e => {
+      const v = parseFloat(e.target.value);
+      if (isNaN(v) || v < 0) return;
+      const p     = State.p;
+      const idx   = p.currentSceneIndex;
+      const scene = p.scenes[idx];
+      if (!scene || idx === 0) return; // Scene 1 always at 0
+      State.pushUndo();
+      scene.startTime = v;
+      // Recompute animDurationMs of previous scene to match
+      if (idx > 0) {
+        const prev = p.scenes[idx - 1];
+        prev.animDurationMs = Math.max(0.1, (v - prev.startTime)) * 1000;
+      }
+      Persistence.save();
+      _syncStageInputs();
+      MusicPlayer.renderTimeline();
     });
 
     /* scene note — save on every keystroke (debounced via Persistence) */
@@ -1507,6 +1580,7 @@ const UI = (() => {
     _syncToggle('btn-grid',    State.p.settings.gridVisible);
     _syncToggle('btn-snap',    State.p.settings.snapToGrid);
     _syncToggle('btn-measure', MeasureTool.active);
+    MusicPlayer.renderTimeline();
   }
 
   /* ─────── PRIVATE SYNC ─────── */
@@ -1527,10 +1601,16 @@ const UI = (() => {
   }
 
   function _syncStageInputs() {
-    const p = State.p;
-    document.getElementById('stage-width').value  = p.stageDimensions.width;
-    document.getElementById('stage-depth').value  = p.stageDimensions.depth;
-    document.getElementById('anim-duration').value = (p.settings.animDurationMs / 1000).toFixed(1);
+    const p     = State.p;
+    const idx   = p.currentSceneIndex;
+    const scene = p.scenes[idx];
+    document.getElementById('stage-width').value   = p.stageDimensions.width;
+    document.getElementById('stage-depth').value   = p.stageDimensions.depth;
+    document.getElementById('anim-duration').value = ((scene?.animDurationMs ?? p.settings.animDurationMs) / 1000).toFixed(1);
+    const stEl = document.getElementById('scene-start-time');
+    stEl.value    = (scene?.startTime ?? 0).toFixed(1);
+    stEl.disabled = (idx === 0); // Scene 1 always starts at 0
+    stEl.title    = idx === 0 ? 'Scene 1 always starts at 0' : 'When this scene\'s transition starts (seconds)';
   }
 
   function _syncToggle(id, active) {
@@ -1600,6 +1680,342 @@ const NotesPanel = (() => {
   }
 
   return { init };
+})();
+
+/* ============================================================
+   MUSIC PLAYER  — load MP3, play/pause/seek, sync timeline
+============================================================ */
+const MusicPlayer = (() => {
+  let _audio    = null;
+  let _file     = null;   // original File reference (needed for ZIP export)
+  let _rafId    = null;
+
+  function init() {
+    _audio = document.getElementById('music-audio');
+    _audio.addEventListener('ended', _onEnded);
+
+    document.getElementById('btn-music-load').addEventListener('click', () => {
+      document.getElementById('music-file-input').click();
+    });
+    document.getElementById('music-file-input').addEventListener('change', e => {
+      const f = e.target.files[0];
+      if (f) load(f);
+      e.target.value = '';
+    });
+    document.getElementById('btn-music-play').addEventListener('click', togglePlay);
+
+    const tl = document.getElementById('music-timeline');
+    tl.addEventListener('pointerdown', _onTimelineDown);
+  }
+
+  function load(file) {
+    if (_audio.src && _audio.src.startsWith('blob:')) URL.revokeObjectURL(_audio.src);
+    _file = file;
+    _audio.src = URL.createObjectURL(file);
+    document.getElementById('music-filename').textContent = file.name;
+    document.getElementById('btn-music-play').disabled = false;
+
+    _audio.addEventListener('loadedmetadata', () => {
+      _onMetadataLoaded();
+    }, { once: true });
+  }
+
+  function _onMetadataLoaded() {
+    const dur    = _audio.duration;
+    const p      = State.p;
+    // If multiple scenes all sit at startTime=0, distribute them evenly
+    const needsDistrib = p.scenes.length > 1 &&
+      p.scenes.every((s, i) => i === 0 ? s.startTime === 0 : s.startTime === 0);
+    if (needsDistrib) {
+      State.pushUndo();
+      const slot = dur / p.scenes.length;
+      p.scenes.forEach((s, i) => {
+        s.startTime    = i * slot;
+        s.animDurationMs = Math.round(Math.min(slot, s.animDurationMs ?? p.settings.animDurationMs) * 10) / 10 * 1000;
+      });
+      // Normalize so startTime chain is consistent
+      recomputeStartTimes();
+      Persistence.save();
+      UI.syncAll();
+    }
+    _updateTimeDisplay();
+    renderTimeline();
+  }
+
+  function togglePlay() {
+    if (!_audio.src) return;
+    if (_audio.paused) {
+      _audio.play();
+      document.getElementById('btn-music-play').textContent = '⏸';
+      _startRaf();
+    } else {
+      _audio.pause();
+      document.getElementById('btn-music-play').textContent = '▶';
+      cancelAnimationFrame(_rafId);
+    }
+  }
+
+  function seekTo(sec) {
+    if (!_audio || !_audio.duration) return;
+    _audio.currentTime = clamp(sec, 0, _audio.duration);
+    _updateProgress();
+    _syncSceneFromTime(_audio.currentTime);
+  }
+
+  function _startRaf() {
+    _rafId = requestAnimationFrame(_rafTick);
+  }
+
+  function _rafTick() {
+    if (!_audio.paused) {
+      _updateProgress();
+      _syncSceneFromTime(_audio.currentTime);
+      _rafId = requestAnimationFrame(_rafTick);
+    }
+  }
+
+  function _updateProgress() {
+    const dur = _audio.duration || 1;
+    const pct = (_audio.currentTime / dur) * 100;
+    document.getElementById('music-progress-fill').style.width  = pct + '%';
+    document.getElementById('music-thumb').style.left           = pct + '%';
+    _updateTimeDisplay();
+  }
+
+  function _updateTimeDisplay() {
+    const cur = _audio ? _audio.currentTime || 0 : 0;
+    const dur = _audio ? _audio.duration    || 0 : 0;
+    document.getElementById('music-time').textContent = `${_fmt(cur)} / ${_fmt(dur)}`;
+  }
+
+  function _fmt(s) {
+    const m   = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, '0')}`;
+  }
+
+  function _syncSceneFromTime(t) {
+    const scenes = State.p.scenes;
+    let idx = 0;
+    for (let i = scenes.length - 1; i >= 0; i--) {
+      if (t >= scenes[i].startTime) { idx = i; break; }
+    }
+    if (idx !== State.p.currentSceneIndex) {
+      State.p.currentSceneIndex = idx;
+      Renderer.render();
+      UI.syncAll();
+    }
+  }
+
+  function renderTimeline() {
+    const markers = document.getElementById('music-markers');
+    if (!markers) return;
+    markers.innerHTML = '';
+    const dur = _audio?.duration || 0;
+    if (!dur) return;
+
+    const scenes = State.p.scenes;
+    scenes.forEach((s, i) => {
+      if (i === 0) return; // first scene always at start, no marker needed
+      const pct    = clamp((s.startTime / dur) * 100, 0, 100);
+      const marker = document.createElement('div');
+      marker.className  = 'music-scene-marker';
+      marker.style.left = pct + '%';
+      marker.title      = `${s.name}  @${_fmt(s.startTime)}`;
+
+      const lbl = document.createElement('div');
+      lbl.className   = 'music-scene-label';
+      lbl.textContent = s.name;
+      marker.appendChild(lbl);
+      markers.appendChild(marker);
+    });
+
+    _updateProgress();
+  }
+
+  /* ── Timeline click / drag to seek ── */
+  function _onTimelineDown(e) {
+    e.preventDefault();
+    _seekFromPointer(e);
+    const onMove = ev => _seekFromPointer(ev);
+    const onUp   = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup',   onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup',   onUp);
+  }
+
+  function _seekFromPointer(e) {
+    const tl  = document.getElementById('music-timeline');
+    const r   = tl.getBoundingClientRect();
+    const pct = clamp((e.clientX - r.left) / r.width, 0, 1);
+    seekTo(pct * (_audio?.duration || 0));
+  }
+
+  function _onEnded() {
+    document.getElementById('btn-music-play').textContent = '▶';
+    cancelAnimationFrame(_rafId);
+    _updateProgress();
+  }
+
+  return {
+    init, load, seekTo, renderTimeline, togglePlay,
+    get file()  { return _file; },
+    get audio() { return _audio; },
+  };
+})();
+
+/* ============================================================
+   PROJECT BUNDLE  — ZIP export (JSON + music + background)
+============================================================ */
+const ProjectBundle = (() => {
+
+  async function exportZip() {
+    if (typeof JSZip === 'undefined') {
+      alert('JSZip library not loaded. Please check your internet connection.');
+      return;
+    }
+    const zip = new JSZip();
+    const p   = State.p;
+
+    // project.json — strip backgroundImage (stored separately)
+    const data = JSON.parse(JSON.stringify(p));
+    const bg   = data.backgroundImage;
+    data.backgroundImage = null;
+    data._exportedAt     = new Date().toISOString();
+    data._version        = 2;
+    zip.file('project.json', JSON.stringify(data, null, 2));
+
+    // music file — use the stored File object directly
+    const musicFile = MusicPlayer.file;
+    if (musicFile) {
+      const ext = musicFile.name.match(/\.[^.]+$/)?.[0] ?? '.mp3';
+      zip.file('music' + ext, musicFile);
+    }
+
+    // background image — convert dataURL → Blob
+    if (bg) {
+      zip.file('background.png', _dataURLToBlob(bg));
+    }
+
+    const blob = await zip.generateAsync({ type: 'blob',
+      compression: 'DEFLATE', compressionOptions: { level: 6 } });
+    const a    = document.createElement('a');
+    const date = new Date().toISOString().slice(0, 10);
+    a.download = `stage-formation-bundle-${date}.zip`;
+    a.href     = URL.createObjectURL(blob);
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+
+  async function importZip(file) {
+    if (typeof JSZip === 'undefined') {
+      alert('JSZip library not loaded.');
+      return;
+    }
+    let zip;
+    try {
+      zip = await JSZip.loadAsync(file);
+    } catch (e) {
+      alert(`ZIP 读取失败 (read error): ${e.message}`);
+      return;
+    }
+
+    // project.json
+    const jsonEntry = zip.file('project.json');
+    if (!jsonEntry) { alert('ZIP 中未找到 project.json (project.json not found in ZIP)'); return; }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(await jsonEntry.async('text'));
+    } catch (e) {
+      alert(`project.json 解析失败 (parse error): ${e.message}`);
+      return;
+    }
+
+    if (!Array.isArray(parsed.scenes) || !parsed.scenes.length || !Array.isArray(parsed.performers)) {
+      alert('project.json 格式无效 (invalid format)');
+      return;
+    }
+
+    // Migrate defaults
+    _migrate(parsed);
+
+    // Background image
+    const bgEntry = zip.file('background.png') || zip.file('background.jpg');
+    if (bgEntry) {
+      const bgBlob = await bgEntry.async('blob');
+      parsed.backgroundImage = await _blobToDataURL(bgBlob);
+    } else {
+      parsed.backgroundImage = null;
+    }
+
+    // Music — find any audio file
+    const musicEntry = Object.values(zip.files).find(f =>
+      !f.dir && /\.(mp3|ogg|wav|aac|m4a|flac)$/i.test(f.name)
+    );
+    if (musicEntry) {
+      const musicBlob = await musicEntry.async('blob');
+      const musicFile = new File([musicBlob], musicEntry.name, { type: 'audio/mpeg' });
+      MusicPlayer.load(musicFile);
+    }
+
+    State.pushUndo();
+    State.p = parsed;
+    Persistence.save();
+    Transform.fitToWindow();
+    UI.syncAll();
+
+    // Show success toast
+    const banner = document.createElement('div');
+    banner.className   = 'io-toast io-toast-ok';
+    banner.textContent = `✓ 已导入：${parsed.scenes.length} 个场景，${parsed.performers.length} 名演员` +
+                         (musicEntry ? '，含音乐' : '');
+    document.getElementById('stage-area').appendChild(banner);
+    setTimeout(() => banner.remove(), 3000);
+  }
+
+  function _migrate(parsed) {
+    if (!parsed.settings)                         parsed.settings = {};
+    if (parsed.settings.animDurationMs == null)   parsed.settings.animDurationMs = 3000;
+    if (parsed.settings.gridVisible    == null)   parsed.settings.gridVisible    = true;
+    if (parsed.settings.snapToGrid     == null)   parsed.settings.snapToGrid     = false;
+    if (parsed.settings.gridSize       == null)   parsed.settings.gridSize       = 1;
+    parsed.currentSceneIndex = clamp(parsed.currentSceneIndex ?? 0, 0, parsed.scenes.length - 1);
+    let t = 0;
+    for (const s of parsed.scenes) {
+      if (s.note           == null) s.note           = '';
+      if (s.animDurationMs == null) s.animDurationMs = parsed.settings.animDurationMs;
+      if (s.startTime      == null) { s.startTime    = t; }
+      t += s.animDurationMs / 1000;
+    }
+    for (const pf of parsed.performers) {
+      const ti = TYPES[pf.type] || TYPES.child;
+      if (pf.widthM  == null) pf.widthM  = ti.widthM;
+      if (pf.heightM == null) pf.heightM = ti.heightM;
+      if (!pf.type)           pf.type    = 'child';
+    }
+  }
+
+  function _dataURLToBlob(dataUrl) {
+    const [header, data] = dataUrl.split(',');
+    const mime           = header.match(/:(.*?);/)[1];
+    const bytes          = atob(data);
+    const arr            = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+    return new Blob([arr], { type: mime });
+  }
+
+  function _blobToDataURL(blob) {
+    return new Promise(res => {
+      const fr = new FileReader();
+      fr.onload = e => res(e.target.result);
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  return { exportZip, importZip };
 })();
 
 /* ============================================================
@@ -1709,5 +2125,6 @@ const ShareLoader = (() => {
 document.addEventListener('DOMContentLoaded', () => {
   UI.init();
   NotesPanel.init();
+  MusicPlayer.init();
   ShareLoader.init();
 });

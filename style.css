@@ -627,6 +627,131 @@ aside {
 }
 
 /* ═══════════════════════════════════════════
+   MUSIC PANEL
+═══════════════════════════════════════════ */
+#music-panel {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+  padding: 6px 10px 5px;
+  gap: 5px;
+  user-select: none;
+}
+
+#music-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.music-filename {
+  flex: 1;
+  color: var(--text2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+}
+
+.music-play-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border2);
+  background: var(--bg4);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0;
+}
+.music-play-btn:hover:not(:disabled) { background: var(--bg-hover); }
+.music-play-btn:disabled { opacity: 0.4; cursor: default; }
+
+.music-time {
+  color: var(--text2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  min-width: 72px;
+  text-align: right;
+}
+
+/* Timeline track */
+#music-timeline-wrap {
+  padding: 2px 0;
+}
+
+#music-timeline {
+  position: relative;
+  height: 20px;
+  background: rgba(255,255,255,0.07);
+  border-radius: 3px;
+  cursor: pointer;
+  overflow: visible;
+}
+
+#music-progress-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 0;
+  background: var(--accent);
+  border-radius: 3px;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+#music-thumb {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px;
+  height: 10px;
+  background: var(--accent);
+  border: 2px solid #fff;
+  border-radius: 50%;
+  pointer-events: none;
+  left: 0;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+
+/* Scene markers on the timeline */
+#music-markers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.music-scene-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255,255,255,0.45);
+  transform: translateX(-50%);
+}
+
+.music-scene-label {
+  position: absolute;
+  top: -15px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  color: var(--text2);
+  white-space: nowrap;
+  pointer-events: none;
+  background: var(--bg2);
+  padding: 1px 3px;
+  border-radius: 2px;
+}
+
+/* ═══════════════════════════════════════════
    SHARE / PREVIEW BANNER
 ═══════════════════════════════════════════ */
 #share-banner {

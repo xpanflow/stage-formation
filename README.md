@@ -14,12 +14,17 @@ A pure-frontend single-page application for creating, editing, and animating sta
 - **Proportional rendering** — performer sizes scale correctly with stage dimensions and zoom
 - **Drag & drop** — smooth dragging constrained to stage bounds; optional snap-to-grid
 - **Multiple scenes** — create, rename, duplicate, and delete scenes; each stores independent positions
-- **Animated transitions** — play eased transitions between scenes with movement path preview
+- **Animated transitions** — play eased transitions between scenes with movement path preview; per-scene transition duration
+- **Music sync** — load a local MP3; scenes are mapped to the music timeline with a visual progress bar and scene markers; playback auto-switches the active scene; click or drag the bar to seek
+- **Scene timing** — each scene has a configurable start time and transition duration; adding music auto-distributes scenes evenly across the track
 - **Zoom & pan** — mouse wheel zoom, pinch zoom (touch), middle-mouse / Space+drag pan
 - **Measurement tool** — click two points to display real-world distance in meters
 - **Scale ruler** — 1 m reference bar always visible on stage
-- **Scene notes** — freetext notes panel per scene (PowerPoint-style, at the bottom of the stage area); auto-saved, preserved on duplicate, included in JSON export/import
-- **JSON export / import** — save the full project as a formatted `.json` file (background image excluded); import validates structure and reports errors in detail
+- **Scene notes** — freetext notes panel per scene (PowerPoint-style, at the bottom of the stage area); auto-saved, preserved on duplicate, included in all exports
+- **JSON export / import** — save the project as a formatted `.json` file (background excluded); import validates structure and reports errors in detail
+- **ZIP bundle export / import** — save the full project including music and background image as a single `.zip` file; import restores all assets automatically
+- **Read-only preview sharing** — share a `?load=<url>` link that loads a remote JSON in preview mode without touching local data
+- **New project** — one-click reset with confirmation prompt
 - **Export PNG** — exports current scene with background, performers, grid, and ruler
 - **Undo / Redo** — full history (up to 60 steps)
 - **Auto-save** — all data saved to `localStorage`; restored on reload
@@ -56,11 +61,12 @@ Or open the **[live demo on GitHub Pages](https://xpanflow.github.io/stage-forma
 2. Optionally **upload a background** stage photo
 3. **Add performers** with the _+ Add_ button (left sidebar)
 4. **Drag performers** onto the stage to set starting positions (Scene 1)
-5. **Add a second scene** — positions are copied as a starting point
-6. Rearrange performers for Scene 2
-7. Add **scene notes** in the bottom panel to document your choreography ideas
-8. Press **▶ Play** to preview the animated transition
-9. **Export JSON** to save the project; **Export PNG** for each scene as needed
+5. **Add more scenes** — positions are copied as a starting point; rearrange for each scene
+6. Load an **MP3** with the _♪ Load_ button in the music panel — scenes are auto-distributed across the track
+7. Fine-tune each scene's **Start** time and **Duration** in the right sidebar Animation section
+8. Add **scene notes** in the bottom panel to document choreography ideas
+9. Press **▶ Play** to preview the animated transition, or use the music timeline to jump to any point
+10. **↓ ZIP** to save the full bundle (project + music + background); **↓ JSON** for a lightweight backup; **↓ PNG** for each scene image
 
 ## Read-Only Preview Sharing
 
@@ -68,7 +74,7 @@ Share a project with anyone as a view-only link — no account required.
 
 **How it works:**
 
-1. Export your project with **↓ Export** → saves a `.json` file (background image not included)
+1. Export your project with **↓ JSON** → saves a `.json` file (background image not included)
 2. Upload the JSON to a publicly accessible URL (e.g. Cloudflare R2 public bucket, GitHub Gist raw, etc.)
 3. Append `?load=<json-url>` to the live demo URL and share it:
 
@@ -88,4 +94,6 @@ Push the repository to GitHub and enable Pages from the `main` branch root. No b
 
 - HTML5 / CSS3 / vanilla JavaScript (ES2020)
 - SVG rendering with world-coordinate transform groups
-- No frameworks, no dependencies, no build tools
+- HTML5 `<audio>` API for music playback and sync
+- [JSZip](https://stuk.github.io/jszip/) (CDN) for ZIP bundle export / import
+- No frameworks, no build tools, no backend
