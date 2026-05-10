@@ -1,6 +1,6 @@
 # 舞台队形编排工具
 
-[English](README.md) | **[▶ 在线演示](https://xpanflow.github.io/stage-formation/)**
+[English](README.md) | **[▶ 在线演示](https://xpanflow.github.io/stage-planner/)**
 
 ![舞台队形编排工具](doc/ScreenShot.png)
 
