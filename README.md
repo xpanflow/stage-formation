@@ -1,6 +1,6 @@
 # Stage Formation Planner
 
-[中文版](README-cn.md)
+[中文版](README-cn.md) | **[▶ Live Demo](https://xpanflow.github.io/stage-formation/)**
 
 ![Stage Formation Planner](doc/ScreenShot.png)
 
@@ -18,6 +18,8 @@ A pure-frontend single-page application for creating, editing, and animating sta
 - **Zoom & pan** — mouse wheel zoom, pinch zoom (touch), middle-mouse / Space+drag pan
 - **Measurement tool** — click two points to display real-world distance in meters
 - **Scale ruler** — 1 m reference bar always visible on stage
+- **Scene notes** — freetext notes panel per scene (PowerPoint-style, at the bottom of the stage area); auto-saved, preserved on duplicate, included in JSON export/import
+- **JSON export / import** — save the full project as a formatted `.json` file (background image excluded); import validates structure and reports errors in detail
 - **Export PNG** — exports current scene with background, performers, grid, and ruler
 - **Undo / Redo** — full history (up to 60 steps)
 - **Auto-save** — all data saved to `localStorage`; restored on reload
@@ -33,6 +35,8 @@ open index.html
 npx serve .
 python3 -m http.server 8080
 ```
+
+Or open the **[live demo on GitHub Pages](https://xpanflow.github.io/stage-formation/)** directly — no installation needed.
 
 ## Keyboard Shortcuts
 
@@ -54,8 +58,9 @@ python3 -m http.server 8080
 4. **Drag performers** onto the stage to set starting positions (Scene 1)
 5. **Add a second scene** — positions are copied as a starting point
 6. Rearrange performers for Scene 2
-7. Press **▶ Play** to preview the animated transition
-8. **Export PNG** for each scene as needed
+7. Add **scene notes** in the bottom panel to document your choreography ideas
+8. Press **▶ Play** to preview the animated transition
+9. **Export JSON** to save the project; **Export PNG** for each scene as needed
 
 ## GitHub Pages Deployment
 
