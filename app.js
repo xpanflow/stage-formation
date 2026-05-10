@@ -2074,37 +2074,53 @@ const ProjectBundle = (() => {
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }
 
-  async function importZip(file) {
+  /**
+   * Core import logic — accepts any Blob/File that JSZip can open.
+   *
+   * preview=false  (default / importZip):  pushes undo, saves to localStorage,
+   *                                         shows a success toast.
+   * preview=true   (ShareLoader):           skips undo/save, returns a result
+   *                                         object so the caller can show its
+   *                                         own banner; caller is responsible
+   *                                         for calling Persistence.save() if
+   *                                         the user clicks "Save locally".
+   *
+   * Returns null on error (error already surfaced to the user).
+   * Returns { scenes, performers, hasMusic, name } on success.
+   */
+  async function importFromBlob(blob, { preview = false } = {}) {
     if (typeof JSZip === 'undefined') {
       alert('JSZip library not loaded.');
-      return;
+      return null;
     }
     let zip;
     try {
-      zip = await JSZip.loadAsync(file);
+      zip = await JSZip.loadAsync(blob);
     } catch (e) {
       alert(`ZIP 读取失败 (read error): ${e.message}`);
-      return;
+      return null;
     }
 
     // project.json
     const jsonEntry = zip.file('project.json');
-    if (!jsonEntry) { alert('ZIP 中未找到 project.json (project.json not found in ZIP)'); return; }
+    if (!jsonEntry) {
+      alert('ZIP 中未找到 project.json (project.json not found in ZIP)');
+      return null;
+    }
 
     let parsed;
     try {
       parsed = JSON.parse(await jsonEntry.async('text'));
     } catch (e) {
       alert(`project.json 解析失败 (parse error): ${e.message}`);
-      return;
+      return null;
     }
 
     if (!Array.isArray(parsed.scenes) || !parsed.scenes.length || !Array.isArray(parsed.performers)) {
       alert('project.json 格式无效 (invalid format)');
-      return;
+      return null;
     }
 
-    // Migrate defaults
     _migrate(parsed);
 
     // Background image — accept any common bitmap format
@@ -2118,7 +2134,7 @@ const ProjectBundle = (() => {
       parsed.backgroundImage = null;
     }
 
-    // Music — find any audio file
+    // Music — find any audio file in the ZIP
     const musicEntry = Object.values(zip.files).find(f =>
       !f.dir && /\.(mp3|ogg|wav|aac|m4a|flac)$/i.test(f.name)
     );
@@ -2128,23 +2144,39 @@ const ProjectBundle = (() => {
       musicFile = new File([musicBlob], musicEntry.name, { type: _audioMime(musicEntry.name) });
     }
 
-    // Replace project state BEFORE loading music, so the async
-    // `loadedmetadata` handler reads the imported scenes (not the old ones).
-    State.pushUndo();
+    // Apply state — order matters: set State.p BEFORE MusicPlayer.load so
+    // the loadedmetadata handler sees the correct imported scenes.
+    if (!preview) State.pushUndo();
     State.p = parsed;
-    Persistence.save();
+    if (!preview) Persistence.save();
     Transform.fitToWindow();
     UI.syncAll();
-
+    // The bundle is a complete project replacement — if it has no music,
+    // any previously-loaded track must go too, otherwise the music timeline
+    // would plot the new scenes against the old audio's duration.
     if (musicFile) MusicPlayer.load(musicFile);
+    else           MusicPlayer.unload();
 
-    // Show success toast
-    const banner = document.createElement('div');
-    banner.className   = 'io-toast io-toast-ok';
-    banner.textContent = `✓ 已导入：${parsed.scenes.length} 个场景，${parsed.performers.length} 名演员` +
-                         (musicEntry ? '，含音乐' : '');
-    document.getElementById('stage-area').appendChild(banner);
-    setTimeout(() => banner.remove(), 3000);
+    if (!preview) {
+      const banner = document.createElement('div');
+      banner.className   = 'io-toast io-toast-ok';
+      banner.textContent = `✓ 已导入：${parsed.scenes.length} 个场景，${parsed.performers.length} 名演员` +
+                           (musicEntry ? '，含音乐' : '');
+      document.getElementById('stage-area').appendChild(banner);
+      setTimeout(() => banner.remove(), 3000);
+    }
+
+    return {
+      scenes:     parsed.scenes.length,
+      performers: parsed.performers.length,
+      hasMusic:   !!musicFile,
+      name:       parsed._projectName ?? null,
+    };
+  }
+
+  // Keep importZip as a thin wrapper for the toolbar ↑ ZIP button.
+  async function importZip(file) {
+    return importFromBlob(file, { preview: false });
   }
 
   const _AUDIO_MIME = {
@@ -2195,7 +2227,7 @@ const ProjectBundle = (() => {
     });
   }
 
-  return { exportZip, importZip };
+  return { exportZip, importZip, importFromBlob };
 })();
 
 /* ============================================================
@@ -2205,14 +2237,48 @@ const ShareLoader = (() => {
   let _previewMode = false;
 
   function init() {
-    const params  = new URLSearchParams(window.location.search);
-    const loadUrl = params.get('load');
-    if (!loadUrl) return;
+    const params     = new URLSearchParams(window.location.search);
+    const loadUrl    = params.get('load');
+    const bundleUrl  = params.get('bundle');
 
-    // Ensure the URL has a protocol (guard against missing https://)
-    const fullUrl = /^https?:\/\//i.test(loadUrl) ? loadUrl : 'https://' + loadUrl;
-    _showBanner('loading', '⏳', '正在加载共享项目… Loading shared project…');
-    _fetchAndLoad(fullUrl);
+    if (bundleUrl) {
+      const fullUrl = /^https?:\/\//i.test(bundleUrl) ? bundleUrl : 'https://' + bundleUrl;
+      _showBanner('loading', '⏳', '正在加载 ZIP 包… Loading bundle…');
+      _fetchAndLoadBundle(fullUrl);
+    } else if (loadUrl) {
+      const fullUrl = /^https?:\/\//i.test(loadUrl) ? loadUrl : 'https://' + loadUrl;
+      _showBanner('loading', '⏳', '正在加载共享项目… Loading shared project…');
+      _fetchAndLoad(fullUrl);
+    }
+  }
+
+  async function _fetchAndLoadBundle(url) {
+    let blob;
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+      blob = await resp.blob();
+    } catch (e) {
+      _showBanner('error', '⚠️', `加载失败 Failed to load bundle: ${e.message}`);
+      return;
+    }
+
+    // Set preview flag before importFromBlob calls UI.syncAll() internally,
+    // so any sync logic that consults ShareLoader.isPreview sees a consistent
+    // state across the JSON and ZIP paths.
+    _previewMode = true;
+    const result = await ProjectBundle.importFromBlob(blob, { preview: true });
+    if (!result) {
+      _previewMode = false;
+      _showBanner('error', '⚠️', '加载失败 Bundle import failed (see console for details)');
+      return;
+    }
+
+    const name = result.name ?? url.split('/').pop().replace(/\.zip$/i, '');
+    _enterPreviewBanner(name, result.scenes, result.performers, {
+      hasMusic:        result.hasMusic,
+      hasBundleMusic:  result.hasMusic,
+    });
   }
 
   async function _fetchAndLoad(url) {
@@ -2249,24 +2315,41 @@ const ShareLoader = (() => {
     }
 
     // Load into State — do NOT call Persistence.save() so local work is untouched
+    _previewMode = true;                  // set before sync (consistent w/ bundle path)
     State.p = data;
-    _previewMode = true;
     Transform.fitToWindow();   // also renders
     UI.syncAll();
 
     const name = data._projectName ?? url.split('/').pop().replace(/\.json$/i, '');
+    _enterPreviewBanner(name, data.scenes.length, data.performers.length, {
+      hasMusic:       false,
+      hasBundleMusic: false,
+    });
+  }
+
+  /* Render the read-only-preview banner with Save / Exit buttons and wire
+     up their click handlers. Shared between the JSON and ZIP code paths. */
+  function _enterPreviewBanner(name, sceneCount, perfCount, { hasMusic, hasBundleMusic }) {
+    const musicTag = hasMusic ? ' · ♪ 含音乐 with music' : '';
     _showBanner(
-      'preview',
-      '👁',
-      `只读预览模式 Preview · <strong>${_esc(name)}</strong> · ${data.scenes.length} 场景 scenes, ${data.performers.length} 演员 performers`,
+      'preview', '👁',
+      `只读预览 Preview · <strong>${_esc(name)}</strong> · ${sceneCount} 场景 scenes, ${perfCount} 演员 performers${musicTag}`,
       [
-        { id: 'preview-save-btn',  label: '💾 保存到本地 Save locally' },
-        { id: 'preview-exit-btn',  label: '✕ 退出 Exit' },
+        // Music from a ZIP bundle is loaded as an ephemeral blob: URL and
+        // is NOT persisted to localStorage — make that explicit so the user
+        // doesn't think a refresh will keep it.
+        { id: 'preview-save-btn', label: hasBundleMusic
+            ? '💾 保存项目 Save project (music not stored)'
+            : '💾 保存到本地 Save locally' },
+        { id: 'preview-exit-btn', label: '✕ 退出 Exit' },
       ]
     );
 
     document.getElementById('preview-save-btn')?.addEventListener('click', () => {
       Persistence.save();
+      // Strip the ?bundle=/?load= query so a refresh starts from local state
+      // instead of re-fetching the remote bundle and re-entering preview mode.
+      window.history.replaceState({}, '', window.location.pathname);
       _showBanner('ok', '✓', '已保存到本地 Saved to local storage — <a href="?" style="color:inherit;text-decoration:underline">退出预览 Exit preview →</a>');
       _previewMode = false;
     });

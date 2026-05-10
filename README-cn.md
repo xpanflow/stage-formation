@@ -23,7 +23,7 @@
 - **场景备注** — 每个场景独立的自由文本备注栏（PowerPoint 风格，位于舞台区底部）；自动保存，复制场景时一并保留，所有导出格式均包含备注内容
 - **JSON 导出 / 导入** — 将项目保存为格式化 `.json` 文件（不含背景图）；导入时验证结构并详细报错
 - **ZIP 打包导出 / 导入** — 将完整项目（含音乐和背景图）打包为单个 `.zip` 文件；导入时自动恢复所有资源
-- **只读预览分享** — 通过 `?load=<url>` 链接分享项目，对方以预览模式打开，不影响本地数据
+- **只读预览分享** — 通过 `?load=<url>`（JSON）或 `?bundle=<url>`（含音乐的 ZIP）链接分享项目，对方以预览模式打开，不影响本地数据
 - **新建项目** — 一键重置，操作前有确认提示
 - **导出 PNG** — 将当前场景（含背景、演员、网格、标尺）导出为 PNG 图片
 - **撤销 / 重做** — 完整操作历史（最多 60 步）
@@ -89,19 +89,36 @@ python3 -m http.server 8080
 
 将项目以只读链接分享给任何人，无需账号。
 
-**操作流程：**
+支持两种分享格式：
+
+| 格式 | URL 参数 | 包含音乐 |
+|------|---------|---------|
+| JSON 导出（无音频） | `?load=<url>` | ✗ |
+| ZIP 打包（完整） | `?bundle=<url>` | ✓ |
+
+### JSON 分享（`?load=`）
 
 1. 点击工具栏 **↓ JSON** 导出项目为 `.json` 文件（不含背景图）
 2. 将 JSON 文件上传至公开可访问的 URL（如 Cloudflare R2 公开 Bucket、GitHub Gist raw 等）
-3. 将 `?load=<json地址>` 拼接到在线演示链接后，发送给对方：
+3. 发送分享链接：
 
 ```
-https://xpanflow.github.io/stage-formation/?load=https://pub-xxx.r2.dev/projects/my-show.json
+https://xpanflow.github.io/stage-formation/?load=https://cdn.example.com/my-show.json
 ```
 
-对方打开链接后，项目自动加载，进入**只读预览模式**（不会覆盖本地存储）。可选择点击 **"保存到本地"** 将其导入自己的工作区。
+### ZIP 分享（`?bundle=`）— 含音乐
 
-> **CORS 说明：** JSON 文件的托管服务需允许来自 `https://xpanflow.github.io` 的 `GET` 请求。使用 Cloudflare R2 时，在 Bucket 的 CORS 设置中添加对应的 `AllowedOrigins` 规则即可。
+1. 点击工具栏 **↓ ZIP** 导出完整打包（含队形、音乐、背景图）
+2. 将 ZIP 文件上传至公开可访问的 URL
+3. 发送分享链接：
+
+```
+https://xpanflow.github.io/stage-formation/?bundle=https://cdn.example.com/my-show.zip
+```
+
+对方打开链接后，项目和音乐自动加载，进入**只读预览模式**（不会覆盖本地存储）。可选择点击 **"保存到本地"** 将其导入自己的工作区。
+
+> **CORS 说明：** 文件托管服务需允许来自 `https://xpanflow.github.io` 的 `GET` 请求。使用 Cloudflare R2 时，在 Bucket 的 CORS 设置中添加对应的 `AllowedOrigins` 规则即可。
 
 ## 部署到 GitHub Pages
 

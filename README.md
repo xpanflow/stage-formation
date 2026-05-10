@@ -23,7 +23,7 @@ A pure-frontend single-page application for creating, editing, and animating sta
 - **Scene notes** — freetext notes panel per scene (PowerPoint-style, at the bottom of the stage area); auto-saved, preserved on duplicate, included in all exports
 - **JSON export / import** — save the project as a formatted `.json` file (background excluded); import validates structure and reports errors in detail
 - **ZIP bundle export / import** — save the full project including music and background image as a single `.zip` file; import restores all assets automatically
-- **Read-only preview sharing** — share a `?load=<url>` link that loads a remote JSON in preview mode without touching local data
+- **Read-only preview sharing** — share a `?load=<url>` link (JSON) or `?bundle=<url>` link (ZIP with music) that loads a remote project in preview mode without touching local data
 - **New project** — one-click reset with confirmation prompt
 - **Export PNG** — exports current scene with background, performers, grid, and ruler
 - **Undo / Redo** — full history (up to 60 steps)
@@ -72,19 +72,36 @@ Or open the **[live demo on GitHub Pages](https://xpanflow.github.io/stage-forma
 
 Share a project with anyone as a view-only link — no account required.
 
-**How it works:**
+Two formats are supported:
 
-1. Export your project with **↓ JSON** → saves a `.json` file (background image not included)
+| Format | URL parameter | Includes music |
+|--------|--------------|---------------|
+| JSON export (no audio) | `?load=<url>` | ✗ |
+| ZIP bundle (full) | `?bundle=<url>` | ✓ |
+
+### JSON sharing (`?load=`)
+
+1. Export with **↓ JSON** → saves a `.json` file (background image not included)
 2. Upload the JSON to a publicly accessible URL (e.g. Cloudflare R2 public bucket, GitHub Gist raw, etc.)
-3. Append `?load=<json-url>` to the live demo URL and share it:
+3. Share the link:
 
 ```
-https://xpanflow.github.io/stage-formation/?load=https://pub-xxx.r2.dev/projects/my-show.json
+https://xpanflow.github.io/stage-formation/?load=https://cdn.example.com/my-show.json
 ```
 
-The recipient opens the link, the project loads automatically in **preview mode** (read-only, local storage is not overwritten). They can optionally click **"Save locally"** to import it into their own workspace.
+### ZIP bundle sharing (`?bundle=`) — includes music
 
-> **CORS note:** the JSON host must allow `GET` requests from `https://xpanflow.github.io`. For Cloudflare R2, add an `AllowedOrigins` CORS rule to the bucket.
+1. Export with **↓ ZIP** → saves a `.zip` bundle (project + music + background)
+2. Upload the ZIP to a publicly accessible URL
+3. Share the link:
+
+```
+https://xpanflow.github.io/stage-formation/?bundle=https://cdn.example.com/my-show.zip
+```
+
+The recipient opens the link; the project and music load automatically in **preview mode** (read-only, local storage is not overwritten). They can optionally click **"Save locally"** to import it into their own workspace.
+
+> **CORS note:** the file host must allow `GET` requests from `https://xpanflow.github.io`. For Cloudflare R2, add an `AllowedOrigins` CORS rule to the bucket.
 
 ## GitHub Pages Deployment
 
